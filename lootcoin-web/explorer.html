@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Lootcoin Explorer</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+
+<nav class="nav">
+  <a href="index.html" class="nav-logo">Lootcoin</a>
+  <div class="nav-links">
+    <a href="index.html" class="nav-btn nav-btn-outline">Home</a>
+    <a href="wallet.html" class="nav-btn nav-btn-outline">Wallet</a>
+  </div>
+</nav>
+
+<div class="explorer-page">
+
+  <!-- ── Left sidebar: network stats ── -->
+  <aside class="explorer-sidebar">
+    <div class="sidebar-url-label" hidden>Node URL</div>
+    <div class="sidebar-url-row">
+      <button id="refreshBtn" title="Refresh" hidden>↻</button>
+    </div>
+
+    <div class="sidebar-divider" hidden></div>
+
+    <div class="sidebar-stats">
+      <div class="sidebar-stat">
+        <span class="sidebar-stat-label">Height</span>
+        <span id="chainHeight" class="sidebar-stat-value">—</span>
+      </div>
+      <div class="sidebar-stat">
+        <span class="sidebar-stat-label">Difficulty</span>
+        <span id="chainDiff" class="sidebar-stat-value">—</span>
+      </div>
+      <div class="sidebar-stat">
+        <span class="sidebar-stat-label">Avg Block Time</span>
+        <span id="chainBlockTime" class="sidebar-stat-value">—</span>
+      </div>
+      <div class="sidebar-stat">
+        <span class="sidebar-stat-label">Hashrate</span>
+        <span id="chainHashrate" class="sidebar-stat-value">—</span>
+      </div>
+      <div class="sidebar-stat">
+        <span class="sidebar-stat-label">Mempool</span>
+        <span id="chainMempool" class="sidebar-stat-value">—</span>
+      </div>
+      <div class="sidebar-stat">
+        <span class="sidebar-stat-label">Lottery Pot</span>
+        <span id="chainPot" class="sidebar-stat-value">—</span>
+      </div>
+      <div class="sidebar-stat">
+        <span class="sidebar-stat-label">Latest Hash</span>
+        <code id="chainHash" class="hash-mono">—</code>
+      </div>
+    </div>
+  </aside>
+
+  <!-- ── Main: tab strip + panels ── -->
+  <main class="explorer-main">
+    <div class="explorer-tabs">
+      <button class="explorer-tab active" id="tabBlocks">Blocks</button>
+      <button class="explorer-tab" id="tabTxs">Transactions</button>
+      <button class="explorer-tab" id="tabLottery">Lottery</button>
+    </div>
+
+    <!-- Blocks panel -->
+    <div id="blocksPanel">
+      <div id="blockList">
+        <p class="empty-state">Loading…</p>
+      </div>
+      <div id="scrollSentinel" class="scroll-sentinel"></div>
+    </div>
+
+    <!-- Transactions panel -->
+    <div id="txPanel" hidden>
+      <div class="addr-search-bar">
+        <input id="addrInput" type="text" placeholder="Enter address (loot1…)" />
+        <button id="addrSearchBtn">Look up</button>
+      </div>
+      <div id="addrBalanceCard" class="addr-balance-card" hidden>
+        <div class="addr-balance-identity">
+          <span id="addrWordcode" class="addr-wordcode"></span>
+        </div>
+        <div class="addr-balance-amount">
+          <span class="addr-balance-label">Balance</span>
+          <span id="addrBalanceValue" class="addr-balance-value">—</span>
+        </div>
+      </div>
+      <div id="txList" class="tx-list"></div>
+      <div id="txLoadMore" class="tx-load-more" hidden>
+        <button id="txLoadMoreBtn" class="btn-secondary">Load more</button>
+      </div>
+      <p id="txEmpty" class="empty-state" hidden></p>
+    </div>
+
+    <!-- Lottery panel -->
+    <div id="lotteryPanel" hidden>
+      <div class="tier-filter-bar">
+        <button class="tier-filter-btn active" data-tier="">All</button>
+        <button class="tier-filter-btn" data-tier="small">Small</button>
+        <button class="tier-filter-btn" data-tier="medium">Medium</button>
+        <button class="tier-filter-btn" data-tier="large">Large</button>
+        <button class="tier-filter-btn" data-tier="jackpot">Jackpot</button>
+      </div>
+      <div id="lotteryList" class="tx-list"></div>
+      <p id="lotteryEmpty" class="empty-state" hidden></p>
+    </div>
+  </main>
+
+</div>
+
+<div id="addrTooltip" class="addr-tooltip"></div>
+<script src="config.js"></script>
+<script type="module" src="explorer.js"></script>
+</body>
+</html>

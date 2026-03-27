@@ -1,0 +1,350 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Lootcoin</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="description" content="A proof-of-work cryptocurrency with a built-in lottery. Mine blocks and compete for a share of the pot." />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+
+<!-- ── Navigation ──────────────────────────────────────────────────────── -->
+<nav class="nav">
+  <span class="nav-logo">Lootcoin</span>
+  <div class="nav-links">
+    <a href="explorer.html" class="nav-btn nav-btn-outline">Explorer</a>
+    <a href="faucet.html"   class="nav-btn nav-btn-outline">Faucet</a>
+    <a href="wallet.html"   class="nav-btn nav-btn-primary">Open Wallet</a>
+  </div>
+</nav>
+
+<!-- ── Hero ────────────────────────────────────────────────────────────── -->
+<section class="hero">
+  <h1>LOOTCOIN</h1>
+  <p class="hero-sub">
+    A cryptocurrency where mining pays you twice: 1 coin per block, plus a lottery ticket
+    for every block that includes transactions — the more you include, the bigger your payout.
+  </p>
+
+  <!-- ── Live Pot ── -->
+  <div class="live-pot">
+    <div class="live-pot-inner">
+      <span class="live-pot-pulse" id="livePotPulse"></span>
+      <span class="live-pot-eyebrow">Current Pot</span>
+      <div class="live-pot-amount" id="livePotValue">—</div>
+      <div class="live-pot-coinlabel">lootcoins</div>
+      <div class="live-pot-jackpot" id="livePotJackpot"></div>
+      <div class="live-pot-last-jackpot" id="liveLastJackpot"></div>
+    </div>
+    <div class="live-pot-node-row">
+      <input id="potNodeUrl" value="http://127.0.0.1:3000" hidden/>
+      <button id="potRefreshBtn" title="Refresh now" hidden>↻</button>
+    </div>
+  </div>
+
+  <div class="hero-ctas">
+    <a href="wallet.html"    class="btn-hero-primary">Open Wallet</a>
+    <a href="explorer.html" class="btn-hero-outline">Block Explorer</a>
+  </div>
+</section>
+
+<!-- ── Stats strip ──────────────────────────────────────────────────────── -->
+<div class="stats-strip">
+  <div class="stat-cell">
+    <span class="stat-value">100M</span>
+    <span class="stat-label">Genesis Supply</span>
+  </div>
+  <div class="stat-cell">
+    <span class="stat-value">60s</span>
+    <span class="stat-label">Target Block Time</span>
+  </div>
+  <div class="stat-cell">
+    <span class="stat-value">4</span>
+    <span class="stat-label">Lottery Tiers</span>
+  </div>
+  <div class="stat-cell">
+    <span class="stat-value">CubeHash</span>
+    <span class="stat-label">Hash Function</span>
+  </div>
+</div>
+
+<!-- ── The Pot ──────────────────────────────────────────────────────────── -->
+<section class="section">
+  <p class="section-eyebrow">The Lottery Pot</p>
+  <h2>99% of all coins start in the pot</h2>
+  <p class="section-lead">
+    At genesis, 99,000,000 coins are locked in the lottery pot and 1,000,000
+    are in circulation. Miners compete to draw from it every block. Transaction
+    fees continuously replenish it, keeping the lottery alive indefinitely.
+  </p>
+
+  <div class="pot-grid">
+    <div class="pot-card">
+      <div class="pot-card-title">Genesis Pot</div>
+      <div class="pot-card-value">99,000,000</div>
+      <div class="pot-card-sub">Locked at block 0 — drawn by miners over time</div>
+    </div>
+    <div class="pot-card">
+      <div class="pot-card-title">Genesis Circulating</div>
+      <div class="pot-card-value">1,000,000</div>
+      <div class="pot-card-sub">Initial supply available to transact with</div>
+    </div>
+    <div class="pot-card">
+      <div class="pot-card-title">Increasing supply</div>
+      <div class="pot-card-value">1 lootcoin</div>
+      <div class="pot-card-sub">Minted into circulation with every block</div>
+    </div>
+    <div class="pot-card">
+      <div class="pot-card-title">Pot Replenishment</div>
+      <div class="pot-card-value">All fees</div>
+      <div class="pot-card-sub">All transaction fees flow into the pot</div>
+    </div>
+  </div>
+
+  <div class="pot-bar-wrap">
+    <div class="pot-bar-label">
+      <span>Lottery Pot — 99%</span>
+      <span>Circulating — 1%</span>
+    </div>
+    <div class="pot-bar-track" style="display:flex">
+      <div class="pot-bar-fill"></div>
+      <div class="pot-bar-fill-circ"></div>
+    </div>
+  </div>
+</section>
+
+<hr class="section-divider" />
+
+<!-- ── How It Works ──────────────────────────────────────────────────────── -->
+<section class="section">
+  <p class="section-eyebrow">How It Works</p>
+  <h2>From block to payout</h2>
+  <p class="section-lead">
+    Mining in Lootcoin pays you in two ways: a guaranteed coin for every block,
+    and a lottery ticket whenever your block includes transactions.
+  </p>
+
+  <div class="steps">
+	<div class="step">
+      <div class="step-num">01</div>
+      <div class="step-title">Include transactions to earn a lottery ticket</div>
+      <div class="step-body">
+        If your block includes at least one transaction, the node issues a <em>loot ticket</em>
+        tied to your miner address and the block height. The payout scales with how many
+		transactions were in your block: a block with at least 20 transactions earns the base
+        payout; fewer transactions scales it down proportionally
+      </div>
+    </div>
+    <div class="step">
+      <div class="step-num">02</div>
+      <div class="step-title">Mine a block</div>
+      <div class="step-body">
+        Find a <code>CubeHash-256</code> hash that meets the
+        current difficulty target. Earn 1 lootcoin upon block acceptance — regardless of
+        whether the block contains transactions.
+      </div>
+    </div>
+    <div class="step">
+      <div class="step-num">03</div>
+      <div class="step-title">Wait for maturity</div>
+      <div class="step-body">
+        Your ticket matures after 100 blocks, then settles within a 10-block reveal window —
+        payout lands at block H+110 at the latest.
+      </div>
+    </div>
+    <div class="step">
+      <div class="step-num">04</div>
+      <div class="step-title">Payout lands in your wallet</div>
+      <div class="step-body">
+        One of 1,000,000 outcome buckets is drawn and results in one of four payout tiers —
+		small wins are common, jackpots are rare. Every payout is a fraction of the current pot so the lottery
+        never fully drains.
+      </div>
+    </div>
+  </div>
+
+  <div class="tiers-grid" style="margin-top:2.5rem">
+    <div class="tier-card small">
+      <div class="tier-name">Small</div>
+      <div class="tier-prob">98.00%</div>
+      <div class="tier-payout">Pot &divide; 500,000</div>
+      <div class="tier-initial">up to ~200 coins at genesis</div>
+    </div>
+    <div class="tier-card medium">
+      <div class="tier-name">Medium</div>
+      <div class="tier-prob">1.90%</div>
+      <div class="tier-payout">Pot &divide; 50,000</div>
+      <div class="tier-initial">up to ~2,000 coins at genesis</div>
+    </div>
+    <div class="tier-card large">
+      <div class="tier-name">Large</div>
+      <div class="tier-prob">0.09%</div>
+      <div class="tier-payout">Pot &divide; 5,000</div>
+      <div class="tier-initial">up to ~20,000 coins at genesis</div>
+    </div>
+    <div class="tier-card jackpot">
+      <div class="tier-name">Jackpot</div>
+      <div class="tier-prob">0.01%</div>
+      <div class="tier-payout">Pot &divide; 1,000</div>
+      <div class="tier-initial">up to ~99,000 coins at genesis</div>
+    </div>
+  </div>
+</section>
+
+<hr class="section-divider" />
+
+<!-- ── Fee Mechanics ─────────────────────────────────────────────────────── -->
+<section class="section">
+  <p class="section-eyebrow">Fee Mechanics</p>
+  <h2>Fees determine how fast you get included</h2>
+  <p class="section-lead">
+    There is no fixed fee schedule. When the network is at capacity, the higher your fee
+	the sooner your transaction is eligible for inclusion.
+  </p>
+
+  <div class="fee-table-wrap">
+    <table class="fee-table">
+      <thead>
+        <tr>
+          <th>Fee</th>
+          <th>Max wait (busy network)</th>
+          <th>Pot contribution</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td class="mono">120+</td>
+          <td>Next block (~1 min)</td>
+          <td class="muted">High</td>
+        </tr>
+        <tr>
+          <td class="mono">12</td>
+          <td>~10 blocks (~10 min)</td>
+          <td class="muted">Medium</td>
+        </tr>
+        <tr>
+          <td class="mono">1</td>
+          <td>~119 blocks (~2 h)</td>
+          <td class="muted">Low</td>
+        </tr>
+        <tr>
+          <td class="mono">0</td>
+          <td>Never included</td>
+          <td class="muted">—</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<hr class="section-divider" />
+
+<!-- ── Get Started ───────────────────────────────────────────────────────── -->
+<section class="section">
+  <p class="section-eyebrow">Get Started</p>
+  <h2>Ready to play?</h2>
+
+  <div class="cta-grid">
+    <div class="cta-card">
+      <div class="cta-icon">
+        <svg xmlns="http://www.w3.org/2000/svg" width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M21 12V7H5a2 2 0 0 1 0-4h14v4"/>
+          <path d="M3 5v14a2 2 0 0 0 2 2h16v-5"/>
+          <path d="M18 12a2 2 0 0 0 0 4h4v-4Z"/>
+        </svg>
+      </div>
+      <h3 class="cta-title">Open the Wallet</h3>
+      <p class="cta-body">
+        Create a new wallet or restore an existing one with your 12-word recovery phrase.
+        Send transactions, check your balance, and track your lottery payouts —
+        all from the browser.
+      </p>
+      <a href="wallet.html" class="cta-link cta-link-primary">Open Wallet &rarr;</a>
+    </div>
+    <div class="cta-card">
+      <div class="cta-icon">
+        <svg xmlns="http://www.w3.org/2000/svg" width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+          <rect x="1" y="8" width="7" height="7" rx="1"/>
+          <rect x="8.5" y="4" width="7" height="7" rx="1"/>
+          <rect x="16" y="8" width="7" height="7" rx="1"/>
+          <line x1="8" y1="11.5" x2="8.5" y2="11.5"/>
+          <line x1="15.5" y1="11.5" x2="16" y2="11.5"/>
+        </svg>
+      </div>
+      <h3 class="cta-title">Block Explorer</h3>
+      <p class="cta-body">
+        Browse the live chain: inspect blocks, transactions, lottery payouts,
+        and chain stats. Connect to any node by entering its API URL.
+      </p>
+      <a href="explorer.html" class="cta-link cta-link-outline">Explore Chain &rarr;</a>
+    </div>
+  </div>
+</section>
+
+<!-- ── Footer ────────────────────────────────────────────────────────────── -->
+<footer class="footer">
+  Lootcoin &mdash; 2026
+</footer>
+
+<script>
+  const REFRESH_MS = 30_000;
+  const JACKPOT_DIVISOR = 1000; // must match lootcoin-core/src/lottery.rs
+
+  let lastFetchTime = null;
+
+  function nodeUrl() {
+    return document.getElementById('potNodeUrl').value.replace(/\/+$/, '');
+  }
+
+  function fmtTimeAgo(timestamp) {
+    const secs = Math.round((Date.now() / 1000) - timestamp);
+    if (secs < 90)         return 'just now';
+    const mins = secs / 60;
+    if (mins < 90)         return `${Math.round(mins)} min ago`;
+    const hours = mins / 60;
+    if (hours < 36)        return `${Math.round(hours)} h ago`;
+    return `${Math.round(hours / 24)} days ago`;
+  }
+
+  async function refreshPot() {
+    const valEl      = document.getElementById('livePotValue');
+    const jackEl     = document.getElementById('livePotJackpot');
+    const lastJackEl = document.getElementById('liveLastJackpot');
+    const pulse      = document.getElementById('livePotPulse');
+    try {
+      const [headResp, jackpotResp] = await Promise.all([
+        fetch(`${nodeUrl()}/chain/head`),
+        fetch(`${nodeUrl()}/lottery/recent-payouts?tier=jackpot&limit=1`),
+      ]);
+      if (!headResp.ok) throw new Error(`HTTP ${headResp.status}`);
+      const data = await headResp.json();
+      const pot = Number(data.pot);
+      valEl.textContent  = pot.toLocaleString();
+      jackEl.textContent = `Jackpot up to ${Math.floor(pot / JACKPOT_DIVISOR).toLocaleString()} coins`;
+      lastFetchTime = Date.now();
+      pulse.style.background = '#4caf50';
+
+      if (jackpotResp.ok) {
+        const jackpots = await jackpotResp.json();
+        if (jackpots.length > 0) {
+          const j = jackpots[0];
+          const when = j.block_timestamp ? fmtTimeAgo(j.block_timestamp) : `block #${j.block_index}`;
+          lastJackEl.textContent = `Last jackpot: ${Number(j.amount).toLocaleString()} coins · ${when}`;
+        } else {
+          lastJackEl.textContent = 'Last jackpot: none yet';
+        }
+      }
+    } catch (_) {
+      pulse.style.background = '#ef5350';
+    }
+  }
+
+  document.getElementById('potRefreshBtn').addEventListener('click', refreshPot);
+  document.getElementById('potNodeUrl').addEventListener('keydown', e => { if (e.key === 'Enter') refreshPot(); });
+
+  refreshPot();
+  setInterval(refreshPot, REFRESH_MS);
+</script>
+</body>
+</html>

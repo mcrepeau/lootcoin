@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Lootcoin Wallet</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body class="wallet-body">
+
+<nav class="nav">
+  <span class="nav-logo">Lootcoin</span>
+  <div class="nav-center" hidden></div>
+  <div class="nav-links">
+    <a href="index.html" class="nav-btn nav-btn-outline">Home</a>
+    <a href="explorer.html" class="nav-btn nav-btn-outline">Explorer</a>
+  </div>
+</nav>
+
+<div class="container">
+
+  <!-- Wallet card -->
+  <div class="card collapsible-card" id="walletCard">
+    <div class="card-header">
+      <span class="card-title">Wallet</span>
+      <span class="card-chevron">▾</span>
+    </div>
+    <div class="card-body">
+      <div id="walletEmpty" class="wallet-empty">
+        <p>No wallet loaded. Create a new wallet or open an existing one with your secret key.</p>
+        <div class="wallet-empty-actions">
+          <button id="newWallet" class="btn-secondary">New Wallet</button>
+          <button id="openWallet" class="btn-secondary">Open Wallet</button>
+        </div>
+      </div>
+      <div id="walletLoaded" style="display:none">
+        <div class="wallet-identity">
+          <div id="wordcode" class="wallet-wordcode">(none)</div>
+          <div class="balance-label wallet-address-label">Wallet address</div>
+          <div class="wallet-address-row">
+            <code id="address" class="address-hex">(none)</code>
+            <button id="copyAddress" class="btn-chip btn-chip-copy">Copy</button>
+          </div>
+        </div>
+        <div class="wallet-balance-row">
+          <div>
+            <div class="balance-label">Balance</div>
+            <div id="balance" class="balance-value">—</div>
+            <div id="pendingInfo" class="pending-info" style="display:none">
+              <span class="pending-label">Spendable:</span>
+              <span id="spendable" class="pending-value">—</span>
+            </div>
+          </div>
+          <button id="getBalance" class="btn-chip">Refresh</button>
+        </div>
+        <button id="closeWallet" class="btn-secondary" style="width:100%;margin-top:28px">Close Wallet</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Send card -->
+  <div class="card collapsible-card collapsed" id="sendCard" style="display:none">
+    <div class="card-header">
+      <span class="card-title">Send</span>
+      <span class="card-chevron">▾</span>
+    </div>
+    <div class="card-body">
+      <div class="row">
+        <label>Receiver Address</label>
+        <input id="receiver" placeholder="loot1…" />
+      </div>
+      <div class="flex-row mt-sm">
+        <div class="flex-1">
+          <label>Amount</label>
+          <input id="amount" type="number" value="1000" class="mt-sm" />
+        </div>
+        <div class="flex-1">
+          <label>Fee</label>
+          <input id="fee" type="number" value="10" min="0" class="mt-sm" />
+        </div>
+      </div>
+      <p id="feeHint" class="fee-hint mt-sm"></p>
+      <div class="fee-presets">
+        <button type="button" class="btn-preset" data-fee="120">High</button>
+        <button type="button" class="btn-preset" data-fee="12">Medium</button>
+        <button type="button" class="btn-preset" data-fee="1">Low</button>
+      </div>
+      <button id="sendTx" style="margin-top:28px">Sign & Submit</button>
+      <div id="sendResult" class="send-result"></div>
+    </div>
+  </div>
+
+  <!-- History card -->
+  <div class="card collapsible-card collapsed" id="historyCard" style="display:none">
+    <div class="card-header">
+      <span class="card-title">History</span>
+      <span class="card-chevron">▾</span>
+    </div>
+    <div class="card-body">
+      <div id="txList" class="tx-list">
+        <p class="empty-state">Load a wallet to see transactions.</p>
+      </div>
+      <div id="txPagination" class="tx-pagination" style="display:none">
+        <button id="txPrev" class="btn-secondary">← Prev</button>
+        <span id="txPageInfo" class="tx-page-info">Page 1</span>
+        <button id="txNext" class="btn-secondary">Next →</button>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<!-- Confirm send modal -->
+<div id="confirmOverlay" class="modal-overlay" style="display:none">
+  <div class="modal-box">
+    <h3>Confirm Transaction</h3>
+    <p class="modal-label">Sending to</p>
+    <code id="confirmWordcode" class="wordcode modal-wordcode"></code>
+    <code id="confirmAddress" class="address-hex modal-address"></code>
+    <div class="modal-details">
+      <div class="modal-row">
+        <span class="modal-key">Amount</span>
+        <span id="confirmAmount" class="modal-val"></span>
+      </div>
+      <div class="modal-row">
+        <span class="modal-key">Fee</span>
+        <span id="confirmFee" class="modal-val"></span>
+      </div>
+      <div class="modal-row">
+        <span class="modal-key">Confirms in</span>
+        <span id="confirmWait" class="modal-val"></span>
+      </div>
+    </div>
+    <div class="flex-row mt-md">
+      <button id="confirmCancel" class="btn-secondary flex-1">Cancel</button>
+      <button id="confirmSend" class="flex-1">Send</button>
+    </div>
+  </div>
+</div>
+
+<!-- Open wallet modal -->
+<div id="openWalletOverlay" class="modal-overlay" style="display:none">
+  <div class="modal-box">
+    <h3>Open Wallet</h3>
+    <label class="modal-label">Recovery phrase (12 words)</label>
+    <textarea id="openWalletPhrase" class="mnemonic-input" rows="3"
+      placeholder="word1 word2 word3 … word12"
+      autocomplete="off" autocorrect="off" autocapitalize="none" spellcheck="false"></textarea>
+    <div class="open-wallet-advanced mt-sm">
+      <button type="button" id="toggleHexInput" class="btn-link">Use secret key instead (advanced)</button>
+    </div>
+    <div id="hexInputArea" style="display:none" class="mt-sm">
+      <label class="modal-label">Secret key (hex)</label>
+      <input id="openWalletInput" placeholder="64-character hex secret key" autocomplete="off" spellcheck="false" />
+    </div>
+    <p id="openWalletError" class="fee-hint fee-hint-error mt-sm" style="min-height:1.1em"></p>
+    <div class="flex-row mt-md">
+      <button id="openWalletCancel" class="btn-secondary flex-1">Cancel</button>
+      <button id="openWalletConfirm" class="flex-1" style="margin-top:0">Open</button>
+    </div>
+  </div>
+</div>
+
+<!-- New wallet modal -->
+<div id="newWalletOverlay" class="modal-overlay" style="display:none">
+  <div class="modal-box">
+    <h3>New Wallet Created</h3>
+    <p class="modal-warning">Write down your 12-word recovery phrase and keep it safe. It will not be shown again.</p>
+    <div id="mnemonicGrid" class="mnemonic-grid"></div>
+    <button id="copyMnemonic" class="btn-paste mt-sm" style="width:100%">Copy to Clipboard</button>
+    <label class="mnemonic-confirm-label mt-md">
+      <input type="checkbox" id="mnemonicSaved" />
+      I have written down my recovery phrase
+    </label>
+    <button id="closeNewWallet" class="mt-sm" disabled>Continue</button>
+  </div>
+</div>
+
+<div id="addrTooltip" class="addr-tooltip"></div>
+
+<script src="config.js"></script>
+<script type="module" src="wallet.js"></script>
+</body>
+</html>

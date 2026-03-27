@@ -1,0 +1,4 @@
+.git/
+lootcoin-wallet/.git/
+lootcoin-wallet/target/
+lootcoin-wallet/pkg/

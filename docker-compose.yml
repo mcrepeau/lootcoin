@@ -1,0 +1,81 @@
+services:
+  node1:
+    build:
+      context: .
+      dockerfile: lootcoin-node/Dockerfile
+    ports:
+      - "3001:3000"
+    volumes:
+      - node1-data:/app/data
+    environment:
+      RUST_LOG: info
+      PEERS: "http://node2:3000,http://node3:3000"
+      NODE_URL: "http://node1:3000"
+
+  node2:
+    build:
+      context: .
+      dockerfile: lootcoin-node/Dockerfile
+    ports:
+      - "3002:3000"
+    volumes:
+      - node2-data:/app/data
+    environment:
+      RUST_LOG: info
+      PEERS: "http://node1:3000,http://node3:3000"
+      NODE_URL: "http://node2:3000"
+
+  node3:
+    build:
+      context: .
+      dockerfile: lootcoin-node/Dockerfile
+    ports:
+      - "3003:3000"
+    volumes:
+      - node3-data:/app/data
+    environment:
+      RUST_LOG: info
+      PEERS: "http://node1:3000,http://node2:3000"
+      NODE_URL: "http://node3:3000"
+
+  web:
+    build:
+      context: .
+      dockerfile: lootcoin-web/Dockerfile
+    ports:
+      - "8888:80"
+
+  faucet:
+    build:
+      context: .
+      dockerfile: lootcoin-faucet/Dockerfile
+    ports:
+      - "3030:3030"
+    depends_on:
+      - node1
+    environment:
+      RUST_LOG: info
+      NODE_URL: "http://node1:3000"
+      FAUCET_SECRET_KEY: "${FAUCET_SECRET_KEY}"
+      DISPENSE_AMOUNT: "500"
+      DISPENSE_FEE: "1"
+      COOLDOWN_SECS: "86400"
+
+  miner:
+    build:
+      context: .
+      dockerfile: lootcoin-miner/Dockerfile
+    depends_on:
+      - node1
+      - node2
+      - node3
+    environment:
+      RUST_LOG: info
+      NODE_URLS: "http://node1:3000,http://node2:3000,http://node3:3000"
+      MINER_ADDRESS: "${MINER_ADDRESS}"
+
+volumes:
+  node1-data:
+  node2-data:
+  node3-data:
+  node4-data:

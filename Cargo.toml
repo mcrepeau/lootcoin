@@ -1,0 +1,12 @@
+[workspace]
+members = [
+    "lootcoin-node",
+    "lootcoin-miner",
+    "lootcoin-faucet",
+    "lootcoin-web/lootcoin-wallet",
+]
+resolver = "2"
+
+[profile.release]
+opt-level = "z"   # optimise for binary size
+lto       = true  # link-time optimisation removes dead code across crates

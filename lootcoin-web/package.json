@@ -1,0 +1,9 @@
+{
+  "name": "lootcoin-web",
+  "version": "1.2.1",
+  "description": "Web frontend for Lootcoin",
+  "type": "module",
+  "scripts": {
+    "build": "wasm-pack build lootcoin-wallet --target web"
+  }
+}

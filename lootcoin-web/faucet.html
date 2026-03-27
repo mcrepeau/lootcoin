@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Lootcoin Faucet</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body class="wallet-body">
+
+<nav class="nav">
+  <a href="index.html" class="nav-logo">Lootcoin</a>
+  <div class="nav-links">
+    <a href="index.html"    class="nav-btn nav-btn-outline">Home</a>
+    <a href="explorer.html" class="nav-btn nav-btn-outline">Explorer</a>
+    <a href="wallet.html"   class="nav-btn nav-btn-outline">Wallet</a>
+  </div>
+</nav>
+
+<div class="container">
+
+  <div class="card" style="padding:32px">
+    <div style="margin-bottom:24px">
+      <p class="section-eyebrow" style="margin:0 0 6px">Testnet</p>
+      <h2 style="margin:0 0 8px;font-size:1.6rem">Faucet</h2>
+      <p style="margin:0;color:var(--muted);font-size:0.95rem">
+        Get free lootcoins to try out the wallet and explore the chain.
+        One request per address per 24 hours.
+      </p>
+    </div>
+
+    <!-- Status bar -->
+    <div id="statusBar" style="display:flex;gap:24px;padding:14px 16px;background:var(--input-bg);border-radius:8px;margin-bottom:24px;flex-wrap:wrap">
+      <div>
+        <div style="font-size:0.75rem;color:var(--muted);margin-bottom:2px">Dispense</div>
+        <div id="statusDispense" style="font-size:1rem;font-weight:600;color:var(--primary)">—</div>
+      </div>
+      <div>
+        <div style="font-size:0.75rem;color:var(--muted);margin-bottom:2px">Faucet Balance</div>
+        <div id="statusBalance" style="font-size:1rem;font-weight:600">—</div>
+      </div>
+      <div>
+        <div style="font-size:0.75rem;color:var(--muted);margin-bottom:2px">Cooldown</div>
+        <div id="statusCooldown" style="font-size:1rem;font-weight:600">—</div>
+      </div>
+    </div>
+
+    <!-- Form -->
+    <label style="display:block;font-size:0.85rem;color:var(--muted);margin-bottom:6px">
+      Your wallet address
+    </label>
+    <input
+      id="addressInput"
+      placeholder="loot1…"
+      spellcheck="false"
+      autocomplete="off"
+      style="width:100%;box-sizing:border-box"
+    />
+    <p id="addrHint" style="min-height:1.2em;margin:6px 0 0;font-size:0.82rem;color:var(--muted)">
+      Find your address in the <a href="wallet.html" style="color:var(--primary)">wallet</a>.
+    </p>
+
+    <button id="requestBtn" style="width:100%;margin-top:20px" disabled>Request coins</button>
+
+    <div id="result" class="send-result" style="margin-top:16px;min-height:1.4em;text-align:center;font-size:0.95rem"></div>
+  </div>
+
+</div>
+
+<script src="config.js"></script>
+<script>
+  const faucetUrl = () => (window.LOOTCOIN_FAUCET_URL || 'http://127.0.0.1:3030').replace(/\/+$/, '');
+
+  const addressInput = document.getElementById('addressInput');
+  const requestBtn   = document.getElementById('requestBtn');
+  const resultEl     = document.getElementById('result');
+  const addrHint     = document.getElementById('addrHint');
+
+  // ── Status ─────────────────────────────────────────────────────────────────
+
+  async function loadStatus() {
+    try {
+      const resp = await fetch(`${faucetUrl()}/status`);
+      if (!resp.ok) return;
+      const s = await resp.json();
+
+      document.getElementById('statusDispense').textContent =
+        `${Number(s.dispense_amount).toLocaleString()} coins`;
+
+      const balEl = document.getElementById('statusBalance');
+      if (s.spendable_balance == null) {
+        balEl.textContent = 'node offline';
+        balEl.style.color = '#ef5350';
+      } else {
+        balEl.textContent = `${Number(s.spendable_balance).toLocaleString()} coins`;
+        balEl.style.color = s.spendable_balance >= s.dispense_amount + s.fee
+          ? '' : '#ef5350';
+      }
+
+      document.getElementById('statusCooldown').textContent =
+        s.cooldown_hours === 1 ? '1 hour' : `${s.cooldown_hours} hours`;
+    } catch (_) {
+      // faucet unreachable — leave dashes
+    }
+  }
+
+  // ── Address validation ─────────────────────────────────────────────────────
+
+  const BECH32_CHARS = 'qpzry9x8gf2tvdw0s3jn54khce6mua7l';
+  function isValidAddress(addr) {
+    return typeof addr === 'string' &&
+      addr.length === 63 &&
+      addr.startsWith('loot1') &&
+      [...addr.slice(5)].every(c => BECH32_CHARS.includes(c));
+  }
+
+  addressInput.addEventListener('input', () => {
+    const val = addressInput.value.trim();
+    if (val === '') {
+      addrHint.textContent = 'Find your address in the wallet.';
+      addrHint.style.color = 'var(--muted)';
+      requestBtn.disabled = true;
+    } else if (!isValidAddress(val)) {
+      addrHint.textContent = 'Must be a lootcoin address starting with loot1.';
+      addrHint.style.color = '#ef5350';
+      requestBtn.disabled = true;
+    } else {
+      addrHint.textContent = '';
+      requestBtn.disabled = false;
+    }
+    resultEl.textContent = '';
+    resultEl.className = 'send-result';
+  });
+
+  // ── Request ────────────────────────────────────────────────────────────────
+
+  requestBtn.addEventListener('click', async () => {
+    const address = addressInput.value.trim();
+    if (!isValidAddress(address)) return;
+
+    requestBtn.disabled = true;
+    requestBtn.textContent = 'Sending…';
+    resultEl.textContent = '';
+    resultEl.className = 'send-result';
+
+    try {
+      const resp = await fetch(`${faucetUrl()}/faucet`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ address }),
+      });
+
+      const data = await resp.json();
+
+      if (resp.ok) {
+        resultEl.textContent = data.message || `Sent ${data.amount} coins!`;
+        resultEl.className = 'send-result result-ok';
+        addressInput.value = '';
+        requestBtn.disabled = true;
+        loadStatus(); // refresh balance
+      } else {
+        resultEl.textContent = data.error || 'Request failed.';
+        resultEl.className = 'send-result result-err';
+        requestBtn.disabled = false;
+      }
+    } catch (_) {
+      resultEl.textContent = 'Could not reach faucet.';
+      resultEl.className = 'send-result result-err';
+      requestBtn.disabled = false;
+    }
+
+    requestBtn.textContent = 'Request coins';
+  });
+
+  loadStatus();
+</script>
+</body>
+</html>

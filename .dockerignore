@@ -1,0 +1,7 @@
+.git/
+target/
+lootcoin-node/target/
+lootcoin-miner/target/
+lootcoin-faucet/target/
+lootcoin-web/lootcoin-wallet/target/
+lootcoin-web/lootcoin-wallet/pkg/
