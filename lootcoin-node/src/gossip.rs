@@ -175,6 +175,27 @@ impl Gossip {
         true
     }
 
+    /// Fire-and-forget: push `block` to every known peer's POST /blocks endpoint.
+    ///
+    /// Called after a block is successfully applied so that peers which cannot
+    /// subscribe to our SSE stream (e.g. nodes behind NAT with no public URL)
+    /// still propagate their blocks across the network.  Each push is spawned
+    /// as an independent task so a slow or unreachable peer never delays the caller.
+    pub async fn push_block_to_peers(&self, block: &Block) {
+        let peers: Vec<String> = self.peers.read().await.keys().cloned().collect();
+        for peer_url in peers {
+            let block_clone = block.clone();
+            let client = self.client.clone();
+            tokio::spawn(async move {
+                let _ = client
+                    .post(format!("{}/blocks", peer_url))
+                    .json(&block_clone)
+                    .send()
+                    .await;
+            });
+        }
+    }
+
     /// Mark a transaction as seen and push it to all SSE subscribers.
     /// Returns `false` (no-op) if the transaction was already seen.
     pub async fn publish_transaction(&self, tx: &Transaction) -> bool {

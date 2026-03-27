@@ -209,6 +209,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6afd537bb44529b01063dc0e5ef6216ac72551c94d4f1a86725c839b1d83a784"
 
 [[package]]
+name = "cudarc"
+version = "0.9.15"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f1871a911a2b9a3f66a285896a719159985683bf9903aa2cf89e0c9f53e14552"
+
+[[package]]
 name = "curve25519-dalek"
 version = "4.1.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -732,9 +738,10 @@ dependencies = [
 
 [[package]]
 name = "lootcoin-miner"
-version = "1.2.1"
+version = "1.3.0"
 dependencies = [
  "anyhow",
+ "cudarc",
  "hex",
  "lootcoin-core",
  "rand 0.8.5",
@@ -749,7 +756,7 @@ dependencies = [
 
 [[package]]
 name = "lootcoin-node"
-version = "1.2.1"
+version = "1.3.0"
 dependencies = [
  "axum",
  "bincode",

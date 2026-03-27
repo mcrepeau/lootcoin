@@ -1,3 +1,6 @@
+#[cfg(feature = "gpu")]
+mod gpu;
+
 use anyhow::Context;
 use rand::Rng;
 use serde::Deserialize;
@@ -223,6 +226,25 @@ async fn main() -> anyhow::Result<()> {
         cfg.miner_address
     );
 
+    // Initialise the GPU miner when the binary was compiled with --features gpu
+    // and the environment variable USE_GPU=1 is set.
+    #[cfg(feature = "gpu")]
+    let gpu_miner: Option<Arc<gpu::GpuMiner>> =
+        if std::env::var("USE_GPU").as_deref() == Ok("1") {
+            match gpu::GpuMiner::new() {
+                Ok(m) => {
+                    info!("GPU miner ready on device 0");
+                    Some(Arc::new(m))
+                }
+                Err(e) => {
+                    warn!("GPU miner init failed: {e} — falling back to CPU");
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(10))
         .build()?;
@@ -406,6 +428,33 @@ async fn main() -> anyhow::Result<()> {
         let difficulty = head.difficulty;
         let start = std::time::Instant::now();
 
+        #[cfg(feature = "gpu")]
+        let mine_result = if let Some(ref miner) = gpu_miner {
+            let miner = Arc::clone(miner);
+            tokio::task::spawn_blocking(move || {
+                let tmpl = gpu::make_header_template(&block);
+                match miner.mine(&tmpl, block.nonce, difficulty, &mine_cancel, &mine_shutdown) {
+                    Ok(Some((winning_nonce, tries))) => {
+                        block.nonce = winning_nonce;
+                        block.hash = block.calculate_hash();
+                        (block, Some(tries))
+                    }
+                    Ok(None) => (block, None),
+                    Err(e) => {
+                        warn!("GPU error: {e} — discarding result");
+                        (block, None)
+                    }
+                }
+            })
+            .await
+        } else {
+            tokio::task::spawn_blocking(move || {
+                let result = mine(&mut block, difficulty, &mine_cancel, &mine_shutdown);
+                (block, result)
+            })
+            .await
+        };
+        #[cfg(not(feature = "gpu"))]
         let mine_result = tokio::task::spawn_blocking(move || {
             let result = mine(&mut block, difficulty, &mine_cancel, &mine_shutdown);
             (block, result)

@@ -186,7 +186,9 @@ async fn apply_incoming_block(state: &AppState, block: Block) -> Result<bool, &'
             pool.evict_expired(height);
             drop(pool);
             drop(chain);
-            state.gossip.publish_block(&candidate).await;
+            if state.gossip.publish_block(&candidate).await {
+                state.gossip.push_block_to_peers(&candidate).await;
+            }
             Ok(true)
         }
         BlockOutcome::Reorged {
@@ -213,7 +215,9 @@ async fn apply_incoming_block(state: &AppState, block: Block) -> Result<bool, &'
             pool.evict_expired(height);
             drop(pool);
             drop(chain);
-            state.gossip.publish_block(&candidate).await;
+            if state.gossip.publish_block(&candidate).await {
+                state.gossip.push_block_to_peers(&candidate).await;
+            }
             Ok(true)
         }
         BlockOutcome::Orphaned => {

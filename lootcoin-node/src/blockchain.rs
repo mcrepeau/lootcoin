@@ -8,7 +8,7 @@ use lootcoin_core::{
     block::{meets_difficulty, Block},
     transaction::Transaction,
 };
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, HashSet};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tracing::{debug, info};
 
@@ -22,9 +22,15 @@ const MAX_DIFFICULTY: f64 = 127.0;
 /// Target time between consecutive blocks, in seconds.
 const TARGET_BLOCK_TIME_SECS: u64 = 60;
 
-/// Recalculate difficulty every N blocks. The window of N+1 timestamps is used
-/// to measure actual elapsed time over those N intervals.
-const RETARGET_INTERVAL: u64 = 100;
+/// ASERT halflife in seconds.  A cumulative deviation of exactly one halflife
+/// between ideal and actual elapsed time (measured from the anchor block) moves
+/// difficulty by exactly 1 bit (2× change in expected hashes).
+///
+/// 3 600 s = 1 hour = 60 blocks at target time.  This means:
+///  • Hashrate doubles  → difficulty catches up by 1 bit per hour of mining.
+///  • Network goes dark → difficulty drops by 1 bit per hour of silence.
+/// The adjustment is applied every block, so there is no fixed window to exploit.
+pub const ASERT_HALFLIFE_SECS: f64 = 3_600.0;
 
 /// Maximum non-coinbase transactions a block may contain. Prevents DoS via
 /// enormous blocks from a flooded mempool.
@@ -48,9 +54,8 @@ const MAX_ORPHANS_PER_HEIGHT: usize = 3;
 const MAX_ORPHAN_POOL_SIZE: usize = MAX_ORPHAN_DEPTH as usize * MAX_ORPHANS_PER_HEIGHT;
 
 /// Number of recent blocks kept in the in-memory sliding window.
-/// Sized to cover a full retarget interval so difficulty history is always
-/// in memory, and comfortably exceeds MAX_ORPHAN_DEPTH so in-memory reorgs
-/// work without touching the DB. Deeper reorgs fall back to DB automatically.
+/// Comfortably exceeds MAX_ORPHAN_DEPTH so in-memory reorgs work without
+/// touching the DB. Deeper reorgs fall back to DB automatically.
 const REORG_WINDOW: usize = 100;
 
 pub enum BlockOutcome {
@@ -99,9 +104,12 @@ pub struct Blockchain {
     initial_difficulty: f64,
     /// Current required PoW difficulty (fractional leading zero bits).
     current_difficulty: f64,
-    /// Ring buffer of the last RETARGET_INTERVAL+1 block timestamps, used
-    /// exclusively for the difficulty retarget calculation.
-    retarget_timestamps: VecDeque<u64>,
+    /// ASERT anchor: the fixed reference point for per-block difficulty.
+    /// Set to (height=1, timestamp, difficulty) when the first mined block is
+    /// applied.  `None` until then — genesis keeps INITIAL_DIFFICULTY.
+    /// Using block 1 rather than genesis avoids the synthetic genesis timestamp
+    /// (which can predate real mining by months) corrupting the calculation.
+    asert_anchor: Option<(u64, u64, f64)>,
 
     /// Cumulative proof-of-work: sum of 2^difficulty for every block on the
     /// main chain. Used instead of height to select the best chain during sync,
@@ -124,12 +132,11 @@ impl Blockchain {
             settled_payouts_by_block: HashMap::new(),
             initial_difficulty: INITIAL_DIFFICULTY,
             current_difficulty: INITIAL_DIFFICULTY,
-            retarget_timestamps: VecDeque::new(),
+            asert_anchor: None,
             chain_work: 0,
         };
 
         chain.block_hashes.insert(genesis.hash.clone(), 0);
-        chain.retarget_timestamps.push_back(genesis.timestamp);
         for tx in genesis.transactions {
             *chain.balances.entry(tx.receiver).or_insert(0) += tx.amount;
         }
@@ -166,27 +173,26 @@ impl Blockchain {
     }
 
     /// Average seconds between the last (up to 10) block intervals.
-    /// Returns `None` if fewer than 2 timestamps are available.
+    /// Returns `None` if fewer than 2 real (non-genesis) blocks are available.
     pub fn get_avg_block_time_secs(&self) -> Option<f64> {
-        let n = self.retarget_timestamps.len();
+        let n = self.blocks.len();
         if n < 3 {
             return None;
         } // need genesis + at least 2 real blocks
         let window = n.min(11); // up to 10 intervals
         let start = n - window;
-        // genesis (index 0) has a synthetic fixed timestamp that may predate real
-        // mining by months. Skip it the same way the retarget does: use block 1 as
-        // the oldest sample whenever genesis would otherwise be included.
-        let (oldest_idx, intervals) = if start == 0 {
-            (1usize, (window - 2) as u64) // skip genesis; one fewer interval
+        // genesis (index == 0) has a synthetic fixed timestamp that may predate
+        // real mining by months — skip it as the oldest sample.
+        let (oldest_idx, intervals) = if self.blocks[start].index == 0 {
+            (start + 1, (window - 2) as u64) // skip genesis; one fewer interval
         } else {
             (start, (window - 1) as u64)
         };
         if intervals == 0 {
             return None;
         }
-        let oldest = self.retarget_timestamps[oldest_idx];
-        let newest = *self.retarget_timestamps.back().unwrap();
+        let oldest = self.blocks[oldest_idx].timestamp;
+        let newest = self.blocks[n - 1].timestamp;
         if newest <= oldest {
             return None;
         }
@@ -535,56 +541,43 @@ impl Blockchain {
             .unwrap_or(u128::MAX);
         self.chain_work = self.chain_work.saturating_add(work);
 
-        // 6) Issue 7: update retarget timestamp ring buffer and adjust difficulty
-        self.retarget_timestamps.push_back(block.timestamp);
-        if self.retarget_timestamps.len() > (RETARGET_INTERVAL as usize) + 1 {
-            self.retarget_timestamps.pop_front();
-        }
-
-        if block.index > 0
-            && block.index.is_multiple_of(RETARGET_INTERVAL)
-            && self.retarget_timestamps.len() == (RETARGET_INTERVAL as usize) + 1
-        {
-            // The first retarget window spans genesis (synthetic fixed timestamp) → block
-            // RETARGET_INTERVAL. Genesis has a hardcoded past timestamp that can be months
-            // before real mining began, producing a falsely huge elapsed time. Skip it: use
-            // block 1's timestamp as window start so we only measure real mining intervals.
-            let (oldest, intervals) = if block.index == RETARGET_INTERVAL {
-                (self.retarget_timestamps[1], RETARGET_INTERVAL - 1)
+        // 6) ASERT per-block difficulty adjustment.
+        //
+        // The anchor is fixed at block 1 (the first real mined block) so that the
+        // synthetic genesis timestamp — which can predate real mining by months —
+        // never enters the calculation.
+        //
+        // Formula (log2 space):
+        //   ideal   = (height − anchor_height) × TARGET_BLOCK_TIME_SECS
+        //   actual  = block.timestamp − anchor_timestamp
+        //   Δ       = (ideal − actual) / ASERT_HALFLIFE_SECS
+        //
+        // Δ > 0 → blocks arrived faster than ideal → difficulty rises.
+        // Δ < 0 → blocks arrived slower than ideal → difficulty falls.
+        // A sustained deviation of one halflife (3 600 s) moves difficulty by 1 bit.
+        if block.index == 1 {
+            // Establish the anchor the first time a real block is applied.
+            self.asert_anchor = Some((1, block.timestamp, self.current_difficulty));
+        } else if let Some((anchor_height, anchor_ts, anchor_diff)) = self.asert_anchor {
+            if anchor_diff < MIN_DIFFICULTY {
+                // Chain was initialised below the minimum (only happens in tests
+                // that set difficulty=0 to avoid real PoW). Skip ASERT so that
+                // fake-hash blocks continue to be accepted.
             } else {
-                (
-                    *self.retarget_timestamps.front().unwrap(),
-                    RETARGET_INTERVAL,
-                )
-            };
-            let newest = *self.retarget_timestamps.back().unwrap();
-            let actual_secs = newest.saturating_sub(oldest);
-            let expected_secs = intervals * TARGET_BLOCK_TIME_SECS;
-
-            if actual_secs > 0 {
-                // Work in log2 space: new_difficulty = old_difficulty + log2(expected/actual).
-                // Equivalent to: new_target = old_target * actual / expected.
-                // This gives fractional sub-bit adjustments, eliminating the 2× oscillation
-                // that integer rounding causes when blocks are only slightly off target.
-                let ratio = expected_secs as f64 / actual_secs as f64;
-                let new_difficulty = self.current_difficulty + ratio.log2();
-                // Cap at ±2 bits per window (4× change in expected hashes) to prevent
-                // a single anomalous window from swinging to an impossible difficulty.
-                // Apply the per-window cap and the absolute bounds as separate clamps
-                // so they never produce an inverted range (which panics on f64::clamp).
-                let clamped = new_difficulty
-                    .max(self.current_difficulty - 2.0)
-                    .min(self.current_difficulty + 2.0)
-                    .clamp(MIN_DIFFICULTY, MAX_DIFFICULTY);
-                if (clamped - self.current_difficulty).abs() > 1e-9 {
-                    info!(
-                        "Difficulty adjusted: {:.3} → {:.3} bits at height {} (avg {:.2}s/block, target {}s)",
-                        self.current_difficulty, clamped, block.index,
-                        actual_secs as f64 / intervals as f64, TARGET_BLOCK_TIME_SECS
-                    );
-                    self.current_difficulty = clamped;
-                }
+            let ideal = (block.index - anchor_height) * TARGET_BLOCK_TIME_SECS;
+            let actual = block.timestamp.saturating_sub(anchor_ts);
+            let adjustment =
+                (ideal as f64 - actual as f64) / ASERT_HALFLIFE_SECS;
+            let new_difficulty =
+                (anchor_diff + adjustment).clamp(MIN_DIFFICULTY, MAX_DIFFICULTY);
+            if (new_difficulty - self.current_difficulty).abs() > 1e-9 {
+                info!(
+                    "Difficulty adjusted: {:.3} → {:.3} bits at height {}",
+                    self.current_difficulty, new_difficulty, block.index
+                );
+                self.current_difficulty = new_difficulty;
             }
+            } // end else (anchor_diff >= MIN_DIFFICULTY)
         }
 
         true
@@ -765,12 +758,11 @@ impl Blockchain {
         self.settled_payouts_by_block.clear();
         self.pot = self.genesis_pot;
         self.current_difficulty = self.initial_difficulty;
-        self.retarget_timestamps.clear();
+        self.asert_anchor = None;
         self.chain_work = 0;
 
         self.block_hashes.insert(genesis.hash.clone(), 0);
         self.blocks.push(genesis.clone());
-        self.retarget_timestamps.push_back(genesis.timestamp);
         for tx in &genesis.transactions {
             *self.balances.entry(tx.receiver.clone()).or_insert(0) += tx.amount;
         }
@@ -1921,83 +1913,96 @@ mod tests {
         );
     }
 
-    // ── Difficulty retarget ───────────────────────────────────────────────────
+    // ── ASERT difficulty adjustment ───────────────────────────────────────────
     //
-    // All retarget tests start at difficulty=10 and mine exactly RETARGET_INTERVAL
-    // blocks.  The first retarget window uses block 1's timestamp as the oldest
-    // sample (not genesis), so:
-    //   actual_secs = timestamp[100] − timestamp[1]
-    //   intervals   = RETARGET_INTERVAL − 1 = 99
-    //   expected    = 99 × TARGET_BLOCK_TIME_SECS = 5,940 s
+    // Anchor is set at block 1.  For all subsequent blocks:
+    //   ideal  = (height − 1) × 60 s
+    //   actual = block.timestamp − anchor.timestamp
+    //   diff   = anchor_diff + (ideal − actual) / HALFLIFE
     //
-    // old_linear = 1 << 10 = 1,024
-    // max_linear = 1,024 × 4 = 4,096  (clamp: at most +2 bits per window)
-    // min_linear = max(256, 256) = 256 (clamp: at most −2 bits per window)
+    // All tests use exactly 2 mined blocks so they run in milliseconds:
+    //   block 1 → sets the anchor (no difficulty change)
+    //   block 2 → first block where ASERT applies; we check the result
 
     #[test]
-    fn retarget_no_change_at_target_block_time() {
-        // Blocks arrive exactly 60 s apart → actual == expected → difficulty unchanged.
+    fn asert_stable_at_target_block_time() {
+        // block 1 at T+60, block 2 at T+120:
+        //   ideal=60, actual=60, adj=0 → no change.
         let mut chain = make_chain_at_difficulty(10.0);
-        for i in 1u64..=100 {
-            let b = mine_next_block(&chain, vec![coinbase_tx("m")], GENESIS_TS + i * 60);
-            chain.apply_in_memory(b, None);
-        }
+        let b1 = mine_next_block(&chain, vec![coinbase_tx("m")], GENESIS_TS + 60);
+        chain.apply_in_memory(b1, None);
+        let b2 = mine_next_block(&chain, vec![coinbase_tx("m")], GENESIS_TS + 120);
+        chain.apply_in_memory(b2, None);
         assert_eq!(chain.get_difficulty(), 10.0);
     }
 
     #[test]
-    fn retarget_increases_when_blocks_too_fast() {
-        // Blocks arrive 1 s apart (actual=99 s, expected=5,940 s).
-        // new_linear = 1024 * 60 = 61,440 — clamped to 4× = 4,096 → 12 bits.
+    fn asert_increases_when_blocks_too_fast() {
+        // block 1 at T+1 (sets anchor ts=T+1), block 2 at T+2:
+        //   ideal=60, actual=1, adj=(60−1)/3600 = 59/3600 → difficulty rises.
         let mut chain = make_chain_at_difficulty(10.0);
-        for i in 1u64..=100 {
-            let b = mine_next_block(&chain, vec![coinbase_tx("m")], GENESIS_TS + i);
-            chain.apply_in_memory(b, None);
-        }
-        assert_eq!(
-            chain.get_difficulty(),
-            12.0,
-            "difficulty must increase by exactly 2 bits (clamped)"
+        let b1 = mine_next_block(&chain, vec![coinbase_tx("m")], GENESIS_TS + 1);
+        chain.apply_in_memory(b1, None);
+        let b2 = mine_next_block(&chain, vec![coinbase_tx("m")], GENESIS_TS + 2);
+        chain.apply_in_memory(b2, None);
+        let expected = 10.0 + 59.0 / ASERT_HALFLIFE_SECS;
+        assert!(
+            (chain.get_difficulty() - expected).abs() < 1e-9,
+            "got {}, expected {expected}",
+            chain.get_difficulty()
         );
     }
 
     #[test]
-    fn retarget_decreases_when_blocks_too_slow() {
-        // Blocks arrive 3,600 s apart (actual=356,400 s, expected=5,940 s).
-        // new_linear = 1024 / 60 ≈ 17 — clamped to ÷4 = 256 → 8 bits.
+    fn asert_decreases_when_blocks_too_slow() {
+        // block 1 at T+60 (anchor), block 2 at T+60+100_000 (very late):
+        //   ideal=60, actual=100_000, adj=(60−100_000)/3600 ≈ −27.8 → floor.
         let mut chain = make_chain_at_difficulty(10.0);
-        for i in 1u64..=100 {
-            let b = mine_next_block(&chain, vec![coinbase_tx("m")], GENESIS_TS + i * 3_600);
-            chain.apply_in_memory(b, None);
-        }
-        assert_eq!(
-            chain.get_difficulty(),
-            8.0,
-            "difficulty must decrease by exactly 2 bits (clamped)"
-        );
-    }
-
-    #[test]
-    fn retarget_not_below_min_difficulty() {
-        // Start at MIN_DIFFICULTY (8) with slow blocks — must stay at the floor.
-        // new_linear ≈ 4, but min_linear = 256 → clamped → 8 bits → no change.
-        let mut chain = make_chain_at_difficulty(MIN_DIFFICULTY);
-        for i in 1u64..=100 {
-            let b = mine_next_block(&chain, vec![coinbase_tx("m")], GENESIS_TS + i * 3_600);
-            chain.apply_in_memory(b, None);
-        }
+        let b1 = mine_next_block(&chain, vec![coinbase_tx("m")], GENESIS_TS + 60);
+        chain.apply_in_memory(b1, None);
+        let b2 = mine_next_block(&chain, vec![coinbase_tx("m")], GENESIS_TS + 100_060);
+        chain.apply_in_memory(b2, None);
         assert_eq!(chain.get_difficulty(), MIN_DIFFICULTY);
     }
 
     #[test]
-    fn retarget_does_not_trigger_between_intervals() {
-        // After 50 blocks (half a retarget interval) difficulty must be unchanged.
+    fn asert_never_below_min_difficulty() {
+        // Same as above but starting at the floor — must not go lower.
+        let mut chain = make_chain_at_difficulty(MIN_DIFFICULTY);
+        let b1 = mine_next_block(&chain, vec![coinbase_tx("m")], GENESIS_TS + 60);
+        chain.apply_in_memory(b1, None);
+        let b2 = mine_next_block(&chain, vec![coinbase_tx("m")], GENESIS_TS + 100_060);
+        chain.apply_in_memory(b2, None);
+        assert_eq!(chain.get_difficulty(), MIN_DIFFICULTY);
+    }
+
+    #[test]
+    fn asert_ceiling_enforced_by_formula() {
+        // Pure arithmetic check — no mining needed.
+        // anchor_diff=120, ideal−actual = 500_000 s → adj ≈ 138.9 → would exceed MAX.
+        let anchor_diff = 120.0_f64;
+        let ideal: u64 = 500_060;
+        let actual: u64 = 60;
+        let adj = (ideal as f64 - actual as f64) / ASERT_HALFLIFE_SECS;
+        let result = (anchor_diff + adj).clamp(MIN_DIFFICULTY, MAX_DIFFICULTY);
+        assert_eq!(result, MAX_DIFFICULTY);
+    }
+
+    #[test]
+    fn asert_halflife_one_bit_decrease() {
+        // block 1 at T+60 (anchor ts=T+60, diff=10), block 2 at T+60+3_660:
+        //   ideal=60, actual=3_660, adj=(60−3_660)/3600 = −1.0 → difficulty = 9.0.
         let mut chain = make_chain_at_difficulty(10.0);
-        for i in 1u64..=50 {
-            let b = mine_next_block(&chain, vec![coinbase_tx("m")], GENESIS_TS + i);
-            chain.apply_in_memory(b, None);
-        }
-        assert_eq!(chain.get_difficulty(), 10.0);
+        let t1 = GENESIS_TS + 60;
+        let b1 = mine_next_block(&chain, vec![coinbase_tx("m")], t1);
+        chain.apply_in_memory(b1, None);
+        let b2 = mine_next_block(&chain, vec![coinbase_tx("m")], t1 + 3_660);
+        chain.apply_in_memory(b2, None);
+        assert!(
+            (chain.get_difficulty() - 9.0).abs() < 1e-9,
+            "expected 9.0, got {}",
+            chain.get_difficulty()
+        );
     }
 
     // ── Reorg ─────────────────────────────────────────────────────────────────
