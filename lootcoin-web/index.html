@@ -6,6 +6,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <meta name="description" content="A proof-of-work cryptocurrency with a built-in lottery. Mine blocks and compete for a share of the pot." />
   <link rel="stylesheet" href="styles.css" />
+  <script src="config.js"></script>
 </head>
 <body>
 
@@ -38,7 +39,6 @@
       <div class="live-pot-last-jackpot" id="liveLastJackpot"></div>
     </div>
     <div class="live-pot-node-row">
-      <input id="potNodeUrl" value="http://127.0.0.1:3000" hidden/>
       <button id="potRefreshBtn" title="Refresh now" hidden>↻</button>
     </div>
   </div>
@@ -294,7 +294,7 @@
   let lastFetchTime = null;
 
   function nodeUrl() {
-    return document.getElementById('potNodeUrl').value.replace(/\/+$/, '');
+    return (window.LOOTCOIN_NODE_URL || 'http://127.0.0.1:3001').replace(/\/+$/, '');
   }
 
   function fmtTimeAgo(timestamp) {
@@ -341,7 +341,6 @@
   }
 
   document.getElementById('potRefreshBtn').addEventListener('click', refreshPot);
-  document.getElementById('potNodeUrl').addEventListener('keydown', e => { if (e.key === 'Enter') refreshPot(); });
 
   refreshPot();
   setInterval(refreshPot, REFRESH_MS);
