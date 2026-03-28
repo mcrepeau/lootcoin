@@ -115,7 +115,7 @@ services:
 | Signing algorithm | Ed25519 |
 | Address format | bech32m (`loot1…`) |
 | Block time target | 60 seconds |
-| Retarget interval | 100 blocks |
+| Difficulty algorithm | ASERT (per-block, 1-hour halflife) |
 | Difficulty granularity | Fractional bits (sub-bit precision) |
 | Fork selection | Most accumulated work (Σ 2^bits) |
 | Coinbase reward | 1 coin per block |

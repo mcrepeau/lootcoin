@@ -47,19 +47,21 @@ Nodes propagate blocks and transactions over **Server-Sent Events (SSE)** rather
 
 ## Difficulty adjustment
 
-Every `100` blocks the node recalculates mining difficulty. The target block time is `60 s`.
+Difficulty is adjusted **every block** using ASERT (Absolutely Scheduled Exponentially weighted Rolling Target). The target block time is `60 s`.
 
 **Formula:**
 
 ```
-new_difficulty = old_difficulty + log₂(expected_time / actual_time)
+new_difficulty = anchor_difficulty + (ideal_elapsed − actual_elapsed) / halflife
 ```
 
-Working in log₂ space is equivalent to scaling the PoW target proportionally (`new_target = old_target × actual / expected`), but avoids the precision loss of converting to a linear hash count and back. The key advantage is that the adjustment is **fractional**: a 0.65% deviation from target nudges difficulty by ~0.009 bits rather than forcing a full 1-bit step.
+Where:
+- `anchor_difficulty` — the difficulty recorded at block 1 (the first real mined block)
+- `ideal_elapsed` — `(current_height − 1) × 60 s` (how long mining *should* have taken)
+- `actual_elapsed` — `current_timestamp − anchor_timestamp` (how long it actually took)
+- `halflife` — `3600 s` (1 hour): a sustained one-halflife deviation shifts difficulty by exactly 1 bit
 
-**Why this matters:**
-
-A 1-bit step doubles or halves the expected hash count, which is far too coarse for small deviations. Integer-bit difficulty causes permanent oscillation whenever the network's true hashrate falls between two powers of two: blocks come in slightly fast → difficulty jumps up by one bit → blocks are now twice as slow → difficulty drops back → repeat. Fractional bits eliminate this entirely: the difficulty converges to the exact value that produces the target block time for the current hashrate.
+Difficulty is expressed in **fractional bits** (e.g. `26.47`). A 0.65% deviation from target nudges difficulty by ~0.009 bits rather than forcing a full 1-bit step, so it converges to the exact value that produces the target block time for the current hashrate.
 
 ---
 
