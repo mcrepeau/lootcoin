@@ -10,7 +10,7 @@ WORKDIR /build
 COPY lootcoin-wallet ./lootcoin-wallet
 COPY Cargo.lock      ./
 # Minimal workspace so cargo can resolve the path without the other members.
-RUN printf '[workspace]\nmembers = ["lootcoin-wallet"]\nresolver = "2"\n' > Cargo.toml
+RUN printf '[workspace]\nmembers = ["lootcoin-wallet"]\nresolver = "2"\n\n[workspace.package]\nversion = "0.0.0"\nedition = "2021"\nauthors = []\nlicense = "AGPL-3.0-only"\n' > Cargo.toml
 RUN wasm-pack build lootcoin-wallet --target web \
     && wasm-opt -Oz \
          -o lootcoin-wallet/pkg/lootcoin_wallet_bg.wasm \

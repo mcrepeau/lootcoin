@@ -8,29 +8,49 @@ on:
       - "lootcoin-miner/DOCKERHUB.md"
       - "lootcoin-faucet/DOCKERHUB.md"
       - "lootcoin-web/DOCKERHUB.md"
+  workflow_dispatch:
 
 jobs:
   push-descriptions:
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        include:
-          - image: mcrepeau79/lootcoin-node
-            readme: lootcoin-node/DOCKERHUB.md
-          - image: mcrepeau79/lootcoin-miner
-            readme: lootcoin-miner/DOCKERHUB.md
-          - image: mcrepeau79/lootcoin-faucet
-            readme: lootcoin-faucet/DOCKERHUB.md
-          - image: mcrepeau79/lootcoin-web
-            readme: lootcoin-web/DOCKERHUB.md
-
     steps:
       - uses: actions/checkout@v4
 
-      - name: Push description to DockerHub — ${{ matrix.image }}
-        uses: peter-evans/dockerhub-description@v4
-        with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
-          repository: ${{ matrix.image }}
-          readme-filepath: ${{ matrix.readme }}
+      - name: Authenticate with DockerHub
+        id: auth
+        run: |
+          JWT=$(curl -s -X POST https://hub.docker.com/v2/users/login \
+            -H "Content-Type: application/json" \
+            -d '{"username":"${{ secrets.DOCKERHUB_USERNAME }}","password":"${{ secrets.DOCKERHUB_TOKEN }}"}' \
+            | jq -r '.token')
+          if [ -z "$JWT" ] || [ "$JWT" = "null" ]; then
+            echo "DockerHub authentication failed"
+            exit 1
+          fi
+          echo "::add-mask::$JWT"
+          echo "jwt=$JWT" >> "$GITHUB_OUTPUT"
+
+      - name: Update descriptions
+        env:
+          JWT: ${{ steps.auth.outputs.jwt }}
+        run: |
+          update() {
+            local image=$1
+            local readme=$2
+            echo "Updating $image …"
+            http_code=$(curl -s -o /tmp/dh_response.json -w "%{http_code}" \
+              -X PATCH "https://hub.docker.com/v2/repositories/$image/" \
+              -H "Authorization: Bearer $JWT" \
+              -H "Content-Type: application/json" \
+              -d "{\"full_description\": $(jq -Rs . < "$readme")}")
+            if [ "$http_code" != "200" ]; then
+              echo "  Failed (HTTP $http_code): $(cat /tmp/dh_response.json)"
+              exit 1
+            fi
+            echo "  OK"
+          }
+
+          update mcrepeau79/lootcoin-node   lootcoin-node/DOCKERHUB.md
+          update mcrepeau79/lootcoin-miner  lootcoin-miner/DOCKERHUB.md
+          update mcrepeau79/lootcoin-faucet lootcoin-faucet/DOCKERHUB.md
+          update mcrepeau79/lootcoin-web    lootcoin-web/DOCKERHUB.md
