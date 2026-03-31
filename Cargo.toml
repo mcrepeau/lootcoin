@@ -7,6 +7,12 @@ members = [
 ]
 resolver = "2"
 
+[workspace.package]
+version = "1.3.2"
+edition = "2021"
+authors = ["Matthieu Crepeau"]
+license = "AGPL-3.0-only"
+
 [profile.release]
 opt-level = "z"   # optimise for binary size
 lto       = true  # link-time optimisation removes dead code across crates

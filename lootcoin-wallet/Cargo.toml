@@ -1,12 +1,12 @@
 [package]
 name = "lootcoin-wallet"
-version = "1.3.1"
-edition = "2021"
-description = "WebAssembly bindings for the Lootcoin wallet functionality"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "CLI wallet and WebAssembly bindings for Lootcoin"
 repository = "https://github.com/mcrepeau/lootcoin-wallet"
-authors = ["Matthieu Crepeau"]
 readme = "README.md"
-license = "AGPL-3.0-only"
 
 [lib]
 # For browser WASM + optional native reuse

@@ -1,10 +1,10 @@
 [package]
 name = "lootcoin-faucet"
-version = "1.3.1"
-edition = "2021"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
 description = "Faucet service for bootstrapping the Lootcoin network"
-authors = ["Matthieu Crepeau"]
-license = "AGPL-3.0-only"
 
 [dependencies]
 lootcoin-core = "1.3"

@@ -1,12 +1,12 @@
 [package]
 name = "lootcoin-miner"
-version = "1.3.1"
-edition = "2021"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
 description = "Miner for the lootcoin cryptocurrency"
 repository = "https://github.com/mcrepeau/lootcoin-miner"
-authors = ["Matthieu Crepeau"]
 readme = "README.md"
-license = "AGPL-3.0-only"
 
 [features]
 gpu = ["cudarc"]
