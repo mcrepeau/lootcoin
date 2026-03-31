@@ -13,7 +13,7 @@ use crate::loot_ticket::LootTicket;
 // value: bincode of (sender, receiver, amount, fee)
 const TX_INDEX: TableDefinition<&[u8], &[u8]> = TableDefinition::new("tx_index");
 const PEERS: TableDefinition<&str, &[u8]> = TableDefinition::new("peers");
-/// key: created_height (u64), value: bincode-encoded (miner: String, tx_count: u64)
+/// key: created_height (u64), value: bincode-encoded miner: String
 const TICKETS: TableDefinition<u64, &[u8]> = TableDefinition::new("tickets");
 /// key: block index (u64), value: bincode-encoded Block
 const BLOCKS: TableDefinition<u64, &[u8]> = TableDefinition::new("blocks");
@@ -184,7 +184,7 @@ impl Db {
                 tickets_table.remove(k)?;
             }
             for t in tickets {
-                let ticket_data = bincode::serialize(&(&t.miner, t.tx_count))?;
+                let ticket_data = bincode::serialize(&t.miner)?;
                 tickets_table.insert(t.created_height, ticket_data.as_slice())?;
             }
 
@@ -408,7 +408,7 @@ impl Db {
                 tickets_table.remove(k)?;
             }
             for t in tickets {
-                let ticket_data = bincode::serialize(&(&t.miner, t.tx_count))?;
+                let ticket_data = bincode::serialize(&t.miner)?;
                 tickets_table.insert(t.created_height, ticket_data.as_slice())?;
             }
         }
@@ -501,7 +501,7 @@ impl Db {
                 tickets_table.remove(k)?;
             }
             for t in tickets {
-                let ticket_data = bincode::serialize(&(&t.miner, t.tx_count))?;
+                let ticket_data = bincode::serialize(&t.miner)?;
                 tickets_table.insert(t.created_height, ticket_data.as_slice())?;
             }
         }
@@ -578,11 +578,10 @@ impl Db {
         let mut tickets = Vec::new();
         for entry in table.range::<u64>(..)? {
             let (k, v) = entry?;
-            let (miner, tx_count): (String, u64) = bincode::deserialize(v.value())?;
+            let miner: String = bincode::deserialize(v.value())?;
             tickets.push(LootTicket {
                 created_height: k.value(),
                 miner,
-                tx_count,
             });
         }
         Ok(tickets)

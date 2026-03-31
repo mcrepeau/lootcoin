@@ -24,8 +24,8 @@
 <section class="hero">
   <h1>LOOTCOIN</h1>
   <p class="hero-sub">
-    A cryptocurrency where mining pays you twice: 1 coin per block, plus a lottery ticket
-    for every block that includes transactions — the more you include, the bigger your payout.
+    A cryptocurrency where mining pays you three ways: 1 coin per block, half of every
+    transaction fee, plus a lottery ticket for every block that includes transactions.
   </p>
 
   <!-- ── Live Pot ── -->
@@ -97,8 +97,8 @@
     </div>
     <div class="pot-card">
       <div class="pot-card-title">Pot Replenishment</div>
-      <div class="pot-card-value">All fees</div>
-      <div class="pot-card-sub">All transaction fees flow into the pot</div>
+      <div class="pot-card-value">50% of fees</div>
+      <div class="pot-card-sub">Half of every transaction fee flows into the pot; the other half goes directly to the miner</div>
     </div>
   </div>
 
@@ -120,29 +120,24 @@
 <section class="section">
   <p class="section-eyebrow">How It Works</p>
   <h2>From block to payout</h2>
-  <p class="section-lead">
-    Mining in Lootcoin pays you in two ways: a guaranteed coin for every block,
-    and a lottery ticket whenever your block includes transactions.
-  </p>
 
   <div class="steps">
-	<div class="step">
+    <div class="step">
       <div class="step-num">01</div>
-      <div class="step-title">Include transactions to earn a lottery ticket</div>
+      <div class="step-title">Mine a block</div>
       <div class="step-body">
-        If your block includes at least one transaction, the node issues a <em>loot ticket</em>
-        tied to your miner address and the block height. The payout scales with how many
-		transactions were in your block: a block with at least 20 transactions earns the base
-        payout; fewer transactions scales it down proportionally
+        Find a <code>CubeHash-256</code> hash that meets the current difficulty target.
+        Earn 1 lootcoin upon block acceptance — regardless of whether the block contains
+        transactions. Half of all transaction fees in your block are paid to you immediately.
       </div>
     </div>
     <div class="step">
       <div class="step-num">02</div>
-      <div class="step-title">Mine a block</div>
+      <div class="step-title">Include transactions to earn a lottery ticket</div>
       <div class="step-body">
-        Find a <code>CubeHash-256</code> hash that meets the
-        current difficulty target. Earn 1 lootcoin upon block acceptance — regardless of
-        whether the block contains transactions.
+        If your block includes at least one transaction, the node issues a <em>loot ticket</em>
+        tied to your miner address and the block height. Payout is a flat fraction of the pot —
+        the same whether your block has 1 transaction or 240.
       </div>
     </div>
     <div class="step">
@@ -167,27 +162,27 @@
   <div class="tiers-grid" style="margin-top:2.5rem">
     <div class="tier-card small">
       <div class="tier-name">Small</div>
-      <div class="tier-prob">98.00%</div>
-      <div class="tier-payout">Pot &divide; 500,000</div>
-      <div class="tier-initial">up to ~200 coins at genesis</div>
+      <div class="tier-prob">36.25%</div>
+      <div class="tier-payout">Pot &divide; 400,000</div>
+      <div class="tier-initial">~247 coins at genesis</div>
     </div>
     <div class="tier-card medium">
       <div class="tier-name">Medium</div>
-      <div class="tier-prob">1.90%</div>
-      <div class="tier-payout">Pot &divide; 50,000</div>
-      <div class="tier-initial">up to ~2,000 coins at genesis</div>
+      <div class="tier-prob">1.67%</div>
+      <div class="tier-payout">Pot &divide; 30,000</div>
+      <div class="tier-initial">~3,300 coins at genesis</div>
     </div>
     <div class="tier-card large">
       <div class="tier-name">Large</div>
-      <div class="tier-prob">0.09%</div>
-      <div class="tier-payout">Pot &divide; 5,000</div>
-      <div class="tier-initial">up to ~20,000 coins at genesis</div>
+      <div class="tier-prob">0.07%</div>
+      <div class="tier-payout">Pot &divide; 2,000</div>
+      <div class="tier-initial">~49,500 coins at genesis</div>
     </div>
     <div class="tier-card jackpot">
       <div class="tier-name">Jackpot</div>
       <div class="tier-prob">0.01%</div>
-      <div class="tier-payout">Pot &divide; 1,000</div>
-      <div class="tier-initial">up to ~99,000 coins at genesis</div>
+      <div class="tier-payout">Pot &divide; 500</div>
+      <div class="tier-initial">~198,000 coins at genesis</div>
     </div>
   </div>
 </section>
@@ -199,8 +194,9 @@
   <p class="section-eyebrow">Fee Mechanics</p>
   <h2>Fees determine how fast you get included</h2>
   <p class="section-lead">
-    There is no fixed fee schedule. When the network is at capacity, the higher your fee
-	the sooner your transaction is eligible for inclusion.
+    There is no fixed fee schedule. The minimum fee is 2 coins — half goes directly to the
+    miner, half to the lottery pot. When the network is at capacity, a higher fee gets you
+    included sooner.
   </p>
 
   <div class="fee-table-wrap">
@@ -209,28 +205,33 @@
         <tr>
           <th>Fee</th>
           <th>Max wait (busy network)</th>
-          <th>Pot contribution</th>
+          <th>Miner gets</th>
+          <th>Pot gets</th>
         </tr>
       </thead>
       <tbody>
         <tr>
           <td class="mono">120+</td>
           <td>Next block (~1 min)</td>
-          <td class="muted">High</td>
+          <td class="muted">60+</td>
+          <td class="muted">60+</td>
         </tr>
         <tr>
           <td class="mono">12</td>
           <td>~10 blocks (~10 min)</td>
-          <td class="muted">Medium</td>
+          <td class="muted">6</td>
+          <td class="muted">6</td>
         </tr>
         <tr>
-          <td class="mono">1</td>
-          <td>~119 blocks (~2 h)</td>
-          <td class="muted">Low</td>
+          <td class="mono">2</td>
+          <td>~59 blocks (~1 h)</td>
+          <td class="muted">1</td>
+          <td class="muted">1</td>
         </tr>
         <tr>
-          <td class="mono">0</td>
+          <td class="mono">&lt; 2</td>
           <td>Never included</td>
+          <td class="muted">—</td>
           <td class="muted">—</td>
         </tr>
       </tbody>
@@ -289,7 +290,7 @@
 
 <script>
   const REFRESH_MS = 30_000;
-  const JACKPOT_DIVISOR = 1000; // must match lootcoin-core/src/lottery.rs
+  const JACKPOT_DIVISOR = 500; // must match lootcoin-core/src/lottery.rs
 
   let lastFetchTime = null;
 

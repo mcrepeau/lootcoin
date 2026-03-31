@@ -20,7 +20,8 @@ use tower_http::{
 };
 use tracing::{info, warn};
 
-use crate::blockchain::{BlockOutcome, Blockchain, MAX_BLOCK_TXS};
+use crate::blockchain::{BlockOutcome, Blockchain};
+use lootcoin_core::block::MAX_BLOCK_TXS;
 use crate::db::Db;
 use crate::gossip::{Gossip, NodeEvent};
 use crate::mempool::{FeeStats, Mempool};
@@ -118,7 +119,7 @@ pub struct BlockView {
     pub previous_hash: Vec<u8>,
     pub timestamp: u64,
     pub nonce: u64,
-    pub transactions: Vec<lootcoin_core::transaction::Transaction>,
+    pub transactions: Vec<Transaction>,
     pub tx_root: Vec<u8>,
     pub hash: Vec<u8>,
     pub lottery_payouts: Vec<LotteryPayoutView>,

@@ -14,21 +14,27 @@ This creates a different incentive structure: miners are rewarded not just for t
 
 ## How the lottery works
 
-1. **Ticket issuance** — every mined block grants the miner one lottery ticket, recorded at the block's height.
-2. **Maturity** — tickets become eligible for settlement after `TICKET_MATURITY = 100` blocks.
+1. **One ticket per block** — every block that contains at least one non-coinbase transaction earns the miner a lottery ticket.
+
+2. **Maturity** — the ticket becomes eligible for settlement after `TICKET_MATURITY = 100` blocks.
+
 3. **Reveal window** — settlement uses the hashes of the 10 blocks following maturity (`REVEAL_BLOCKS = 10`) as entropy. An attacker would need to control all 10 consecutive blocks to steer the outcome.
-4. **Payout tiers**:
 
-| Probability | Tier (`tier` field) | Base payout (at 20 txs) |
-|---|---|---|
-| 98.00% | `small` | pot / 500,000 |
-| 1.90% | `medium` | pot / 50,000 |
-| 0.09% | `large` | pot / 5,000 |
-| 0.01% | `jackpot` | pot / 1,000 |
+4. **Single draw** — at block H+110 the ticket is settled against the pot *at that moment* using one probabilistic draw:
 
-5. **Transaction multiplier** — the base payout is scaled by `min(tx_count, 20) / 20`, where `tx_count` is the number of non-coinbase transactions in the block. A block with 1 transaction receives 1/20th of the base payout; a block with 20 or more transactions receives the full base payout. This gives miners a continuous per-transaction incentive without a binary cliff.
+| Probability | Tier | Payout formula | Expected frequency |
+|---|---|---|---|
+| 62.00% | no-win | — | — |
+| 36.25% | `small` | `pot / 400,000` | every ~3 blocks |
+| 1.67% | `medium` | `pot / 30,000` | every ~60 blocks (~1 h) |
+| 0.07% | `large` | `pot / 2,000` | every ~1,440 blocks (~1 day) |
+| 0.01% | `jackpot` | `pot / 500` | every ~10,080 blocks (~1 week) |
 
-6. **Pot funding** — seeded at genesis with 99,000,000 coins; grows with every transaction fee thereafter. Payouts are fractions of the pot so it never fully drains.
+Payouts are a flat fraction of the current pot — independent of how many transactions were in the block. No-win tickets produce no entry in `lottery_payouts`.
+
+5. **Fee split** — each block's transaction fees are split 50/50: half goes directly to the block's miner as immediate income, half accumulates in the lottery pot. This is the per-transaction incentive for miners; the lottery rewards the block itself.
+
+6. **Pot funding** — seeded at genesis with 99,000,000 coins; replenished by 50% of every transaction fee thereafter. Payouts are fractions of the pot so it never fully drains. The pot naturally trends from its genesis level toward a long-run equilibrium determined by network activity.
 
 ---
 

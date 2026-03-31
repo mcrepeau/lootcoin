@@ -9,7 +9,7 @@ services:
       - node-data:/app/data
     environment:
       RUST_LOG: info
-      PEERS: "https://lootcoin-node.rimba-net.com"
+      PEERS: ""
       NODE_URL: "http://node:3000"
 
   web:

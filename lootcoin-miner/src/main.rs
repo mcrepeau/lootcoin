@@ -11,7 +11,7 @@ use tokio_stream::StreamExt as _;
 use tracing::{info, warn};
 use tracing_subscriber::{fmt, EnvFilter};
 
-use lootcoin_core::block::{meets_difficulty, Block};
+use lootcoin_core::block::{meets_difficulty, Block, MAX_BLOCK_TXS};
 use lootcoin_core::lottery::GUARANTEE_AFTER;
 use lootcoin_core::transaction::Transaction;
 
@@ -301,7 +301,6 @@ async fn main() -> anyhow::Result<()> {
         //
         //    In both cases transactions are sorted highest-fee-first so miners
         //    always maximise their fee income.
-        const MAX_BLOCK_TXS: usize = 200;
         let pending = entries.len();
 
         let mut txs: Vec<Transaction> = if pending <= MAX_BLOCK_TXS {

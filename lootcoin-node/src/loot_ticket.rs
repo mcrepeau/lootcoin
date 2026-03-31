@@ -1,21 +1,17 @@
 // Protocol constants live in lootcoin-core so every crate shares the same values.
 pub(crate) use lootcoin_core::lottery::{
-    JACKPOT_DIVISOR, LARGE_DIVISOR, MEDIUM_DIVISOR, PPM, REVEAL_BLOCKS, SMALL_DIVISOR,
-    TICKET_MATURITY, TX_MULTIPLIER_CAP,
+    JACKPOT_BUCKET_START, JACKPOT_DIVISOR, LARGE_BUCKET_START, LARGE_DIVISOR, MEDIUM_BUCKET_START,
+    MEDIUM_DIVISOR, MIN_TX_FEE, PPM, REVEAL_BLOCKS, SMALL_BUCKET_START, SMALL_DIVISOR,
+    TICKET_MATURITY,
 };
 
-/// System-generated ticket issued to the miner of each block.
+/// System-generated ticket issued to the miner of each block that contains
+/// at least one non-coinbase transaction.
 /// Matures after TICKET_MATURITY blocks, then settled using REVEAL_BLOCKS
-/// of accumulated entropy.
-///
-/// `tx_count` is the number of non-coinbase transactions in the block that
-/// earned this ticket. The final payout is scaled by
-/// `min(tx_count, TX_MULTIPLIER_CAP) / TX_MULTIPLIER_CAP`, giving miners
-/// a continuous per-transaction incentive up to the cap.
+/// of accumulated entropy. Payout is a flat fraction of the pot (`pot / DIVISOR`);
+/// per-transaction incentives come from the 50/50 fee split instead.
 #[derive(Clone)]
 pub struct LootTicket {
     pub miner: String,
     pub created_height: u64,
-    /// Non-coinbase transaction count in the block that earned this ticket.
-    pub tx_count: u64,
 }

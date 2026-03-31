@@ -1,6 +1,6 @@
 # Lootcoin
 
-A proof-of-work blockchain with a **lottery-based fee mechanism**: instead of transaction fees going directly to the miner who includes them, every fee accumulates in a shared pot. Every mined block enters the miner in a deferred lottery, awarding the miner a random fraction of that pot.
+A proof-of-work blockchain with a **lottery-based fee mechanism**: half of every transaction fee goes directly to the miner who includes it; the other half accumulates in a shared pot. Every block that contains at least one transaction earns the miner a deferred lottery ticket, awarding a random fraction of that pot.
 
 ---
 
@@ -119,7 +119,7 @@ services:
 | Difficulty granularity | Fractional bits (sub-bit precision) |
 | Fork selection | Most accumulated work (Σ 2^bits) |
 | Coinbase reward | 1 coin per block |
-| Max non-coinbase txs per block | 200 |
+| Max non-coinbase txs per block | 240 |
 | Ticket maturity | 100 blocks |
 | Reveal window | 10 blocks |
 

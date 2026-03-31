@@ -1,11 +1,12 @@
 use crate::db::Db;
 use crate::loot_ticket::{
-    LootTicket, JACKPOT_DIVISOR, LARGE_DIVISOR, MEDIUM_DIVISOR, PPM, REVEAL_BLOCKS, SMALL_DIVISOR,
-    TICKET_MATURITY, TX_MULTIPLIER_CAP,
+    LootTicket, JACKPOT_BUCKET_START, JACKPOT_DIVISOR, LARGE_BUCKET_START, LARGE_DIVISOR,
+    MEDIUM_BUCKET_START, MEDIUM_DIVISOR, MIN_TX_FEE, PPM, REVEAL_BLOCKS, SMALL_BUCKET_START,
+    SMALL_DIVISOR, TICKET_MATURITY,
 };
 use cubehash::CubeHash256;
 use lootcoin_core::{
-    block::{meets_difficulty, Block},
+    block::{meets_difficulty, Block, MAX_BLOCK_TXS},
     transaction::Transaction,
 };
 use std::collections::{HashMap, HashSet};
@@ -32,9 +33,6 @@ const TARGET_BLOCK_TIME_SECS: u64 = 60;
 /// The adjustment is applied every block, so there is no fixed window to exploit.
 pub const ASERT_HALFLIFE_SECS: f64 = 3_600.0;
 
-/// Maximum non-coinbase transactions a block may contain. Prevents DoS via
-/// enormous blocks from a flooded mempool.
-pub const MAX_BLOCK_TXS: usize = 200;
 
 /// A block's timestamp must exceed the median of the last N block timestamps
 /// (Median Time Past). Prevents backdating attacks and difficulty manipulation
@@ -96,7 +94,7 @@ pub struct Blockchain {
     /// and drained by `apply_block` to persist visible payout records.
     /// Pruned with the sliding window; cleared on reorg replays.
     /// Each entry is (receiver, amount, tier) where tier is one of
-    /// "small", "medium", "large", "jackpot".
+    /// "small", "medium", "large", "jackpot". No-win draws produce no entry.
     settled_payouts_by_block: HashMap<u64, Vec<(String, u64, String)>>,
 
     /// Difficulty the chain resets to at genesis when replaying after a reorg.
@@ -245,7 +243,7 @@ impl Blockchain {
     /// Check fee, balance, and that this signature hasn't been confirmed already.
     /// Does not re-verify the Ed25519 signature — caller must do that first.
     pub fn validate_transaction_state(&self, tx: &Transaction) -> bool {
-        if tx.fee == 0 {
+        if tx.fee < MIN_TX_FEE {
             return false;
         }
         if self.confirmed_signatures.contains(&tx.signature) {
@@ -291,14 +289,21 @@ impl Blockchain {
         self.blocks.get(rel).map(|b| b.hash.as_slice())
     }
 
-    /// Accumulate REVEAL_BLOCKS hashes starting at `reveal_start` and use the
-    /// result as lottery randomness. An attacker must control all REVEAL_BLOCKS
-    /// consecutive blocks to steer the outcome; each additional block required
-    /// multiplies the difficulty by (1/p) where p is their hashrate fraction.
+    /// Resolve the lottery draw for a maturing ticket.
     ///
-    /// Reward is a fraction of the current pot (see loot_ticket.rs divisors).
-    /// Sequential ticket settlements in the same block each see the already-
-    /// reduced pot, so multiple jackpots in one block don't stack at full value.
+    /// Uses REVEAL_BLOCKS of accumulated block-hash entropy so that an attacker
+    /// must control all REVEAL_BLOCKS consecutive blocks to steer the outcome.
+    ///
+    /// Payout formula: `pot / DIVISOR` (flat, independent of tx count).
+    ///
+    /// Per-transaction incentives are provided by the 50/50 fee split.
+    ///
+    /// Outcome probabilities:
+    ///   • 62.00 % → (0, "none")
+    ///   • 36.25 % → (amount, "small")
+    ///   •  1.67 % → (amount, "medium")   — ~hourly at thriving pace
+    ///   •  0.07 % → (amount, "large")    — ~daily
+    ///   •  0.01 % → (amount, "jackpot")  — ~weekly
     fn compute_ticket_reward(&self, reveal_start: u64, ticket: &LootTicket) -> (u64, &'static str) {
         let mut entropy: Vec<u8> = Vec::with_capacity(32 * REVEAL_BLOCKS as usize);
         for i in 0..REVEAL_BLOCKS {
@@ -311,18 +316,13 @@ impl Blockchain {
         let digest = CubeHash256::digest(&data);
         let bucket = Self::loot_bucket_from_digest(&digest);
 
-        let (base_payout, tier) = match bucket {
-            0..=979_999 => (self.pot / SMALL_DIVISOR, "small"),
-            980_000..=998_999 => (self.pot / MEDIUM_DIVISOR, "medium"),
-            999_000..=999_899 => (self.pot / LARGE_DIVISOR, "large"),
-            _ => (self.pot / JACKPOT_DIVISOR, "jackpot"),
-        };
-
-        // Scale payout by min(tx_count, N) / N so miners with more transactions
-        // earn proportionally more. At TX_MULTIPLIER_CAP txs the full base payout
-        // applies; a block with 1 tx earns 1/TX_MULTIPLIER_CAP of the base.
-        let multiplier = ticket.tx_count.min(TX_MULTIPLIER_CAP);
-        ((base_payout * multiplier) / TX_MULTIPLIER_CAP, tier)
+        match bucket {
+            0..SMALL_BUCKET_START                    => (0,                             "none"),
+            SMALL_BUCKET_START..MEDIUM_BUCKET_START  => (self.pot / SMALL_DIVISOR,   "small"),
+            MEDIUM_BUCKET_START..LARGE_BUCKET_START  => (self.pot / MEDIUM_DIVISOR,  "medium"),
+            LARGE_BUCKET_START..JACKPOT_BUCKET_START => (self.pot / LARGE_DIVISOR,   "large"),
+            _                                        => (self.pot / JACKPOT_DIVISOR, "jackpot"),
+        }
     }
 
     fn extract_miner_address(block: &Block) -> Option<String> {
@@ -433,7 +433,7 @@ impl Blockchain {
                 if !tx.verify() {
                     return false;
                 }
-                if tx.fee == 0 {
+                if tx.fee < MIN_TX_FEE {
                     return false;
                 }
                 // Reject replays: sig already confirmed or appears twice in this block
@@ -483,19 +483,19 @@ impl Blockchain {
         let mut payouts_this_block: Vec<(String, u64, String)> = Vec::new();
         for t in to_settle {
             let reveal_start = t.created_height + TICKET_MATURITY;
-            let (raw, tier) = self.compute_ticket_reward(reveal_start, &t);
-            let payout = raw.min(self.pot);
+            let (amount, tier) = self.compute_ticket_reward(reveal_start, &t);
+            let payout = amount.min(self.pot);
             if payout > 0 {
                 self.pot -= payout;
                 *self.balances.entry(t.miner.clone()).or_insert(0) += payout;
                 payouts_this_block.push((t.miner.clone(), payout, tier.to_string()));
                 info!(
-                    "Lottery payout: {} coins ({}) → {} (ticket from block {}, pot now {})",
+                    "Lottery: {} coins ({}) → {} (ticket from block {}, pot now {})",
                     payout, tier, t.miner, t.created_height, self.pot
                 );
             } else {
                 debug!(
-                    "Lottery: zero payout for ticket from block {} (pot={})",
+                    "Lottery: no win for ticket from block {} (pot={})",
                     t.created_height, self.pot
                 );
             }
@@ -505,9 +505,23 @@ impl Blockchain {
                 .insert(current_index, payouts_this_block);
         }
 
-        // 2) Apply transactions
+        // 2) Apply transactions, then split fees 50/50 between pot and miner.
+        //    apply_transaction() adds each fee entirely to the pot; after the
+        //    loop we transfer the miner's half back out so the accounting stays
+        //    consistent regardless of how many txs are in the block.
+        let mut total_block_fees: u64 = 0;
         for tx in &block.transactions {
+            if !tx.sender.is_empty() {
+                total_block_fees = total_block_fees.saturating_add(tx.fee);
+            }
             self.apply_transaction(tx);
+        }
+        let miner_fee_share = total_block_fees / 2; // floor: equal split; odd remainder goes to pot
+        if miner_fee_share > 0 {
+            if let Some(miner_addr) = Self::extract_miner_address(block) {
+                self.pot = self.pot.saturating_sub(miner_fee_share);
+                *self.balances.entry(miner_addr).or_insert(0) += miner_fee_share;
+            }
         }
 
         // 3) Record block
@@ -517,18 +531,12 @@ impl Blockchain {
         // 4) Issue lottery ticket to the miner — only if the block includes at least
         //    one non-coinbase transaction. Coinbase-only blocks add nothing to the pot
         //    (fees are the pot's replenishment source), so they earn no ticket.
-        //    The tx_count is recorded so the settlement multiplier can be applied later.
-        let tx_count = block
-            .transactions
-            .iter()
-            .filter(|t| !t.sender.is_empty())
-            .count() as u64;
-        if tx_count > 0 {
+        let has_real_tx = block.transactions.iter().any(|t| !t.sender.is_empty());
+        if has_real_tx {
             if let Some(miner_addr) = Self::extract_miner_address(block) {
                 self.pending_tickets.push(LootTicket {
                     miner: miner_addr,
                     created_height: current_index,
-                    tx_count,
                 });
             }
         }
@@ -1169,29 +1177,32 @@ mod tests {
     // ── validate_transaction_state ───────────────────────────────────────────
 
     #[test]
-    fn validate_rejects_zero_fee() {
+    fn validate_rejects_below_min_fee() {
         let chain = make_chain();
+        // fee=0 and fee=1 are both below MIN_TX_FEE=2
+        for bad_fee in [0u64, 1] {
         let tx = Transaction {
             sender: "genesis_miner".to_string(),
             receiver: "alice".to_string(),
             amount: 100,
-            fee: 0,
+            fee: bad_fee,
             nonce: 0,
             public_key: [0u8; 32],
             signature: vec![1],
         };
         assert!(!chain.validate_transaction_state(&tx));
+        } // end for bad_fee
     }
 
     #[test]
     fn validate_rejects_insufficient_balance() {
         let chain = make_chain();
-        // genesis_miner has 1000; trying to send 1000 + fee 1 = 1001
+        // genesis_miner has 1000; trying to send 999 + fee 2 = 1001
         let tx = Transaction {
             sender: "genesis_miner".to_string(),
             receiver: "alice".to_string(),
-            amount: 1000,
-            fee: 1,
+            amount: 999,
+            fee: 2,
             nonce: 0,
             public_key: [0u8; 32],
             signature: vec![1],
@@ -1305,7 +1316,9 @@ mod tests {
         chain.apply_in_memory(send_block, None);
         assert_eq!(chain.get_balance(&alice_addr), 390); // 500 - 100 - 10
         assert_eq!(chain.get_balance(&bob_addr), 100);
-        assert_eq!(chain.get_pot(), 10);
+        // 50/50 fee split: 5 to pot, 5 to miner (miner also has 1 from coinbase)
+        assert_eq!(chain.get_pot(), 5);
+        assert_eq!(chain.get_balance("miner"), 6); // 1 coinbase + 5 fee share
     }
 
     // ── apply_in_memory: invalid blocks ──────────────────────────────────────
@@ -1718,36 +1731,37 @@ mod tests {
         );
     }
 
-    /// Verify that the payout divisors and tier names assigned to each bucket
-    /// range match the documented values. This test replicates the match arms
-    /// from `compute_ticket_reward` so any change to the boundaries or divisors
-    /// will be caught immediately.
+    /// Verify that the tier boundaries, divisors, and payout formula match the
+    /// documented values. This test replicates the match arms from
+    /// `compute_ticket_reward` so any change to boundaries or divisors is caught
+    /// immediately.
+    ///
+    /// Payout formula: `pot / DIVISOR`
     #[test]
     fn payout_divisors_match_bucket_ranges() {
         const POT: u64 = 1_000_000_000;
         let cases: &[(u32, u64, &str)] = &[
-            (0, POT / SMALL_DIVISOR, "small"),
-            (979_999, POT / SMALL_DIVISOR, "small"),
-            (980_000, POT / MEDIUM_DIVISOR, "medium"),
-            (998_999, POT / MEDIUM_DIVISOR, "medium"),
-            (999_000, POT / LARGE_DIVISOR, "large"),
-            (999_899, POT / LARGE_DIVISOR, "large"),
-            (999_900, POT / JACKPOT_DIVISOR, "jackpot"),
-            (999_999, POT / JACKPOT_DIVISOR, "jackpot"),
+            (0,                          0,                     "none"),
+            (SMALL_BUCKET_START - 1,     0,                     "none"),
+            (SMALL_BUCKET_START,         POT / SMALL_DIVISOR,   "small"),
+            (MEDIUM_BUCKET_START - 1,    POT / SMALL_DIVISOR,   "small"),
+            (MEDIUM_BUCKET_START,        POT / MEDIUM_DIVISOR,  "medium"),
+            (LARGE_BUCKET_START - 1,     POT / MEDIUM_DIVISOR,  "medium"),
+            (LARGE_BUCKET_START,         POT / LARGE_DIVISOR,   "large"),
+            (JACKPOT_BUCKET_START - 1,   POT / LARGE_DIVISOR,   "large"),
+            (JACKPOT_BUCKET_START,       POT / JACKPOT_DIVISOR, "jackpot"),
+            (PPM - 1,                    POT / JACKPOT_DIVISOR, "jackpot"),
         ];
         for &(bucket, expected_amount, expected_tier) in cases {
             let (amount, tier) = match bucket {
-                0..=979_999 => (POT / SMALL_DIVISOR, "small"),
-                980_000..=998_999 => (POT / MEDIUM_DIVISOR, "medium"),
-                999_000..=999_899 => (POT / LARGE_DIVISOR, "large"),
-                _ => (POT / JACKPOT_DIVISOR, "jackpot"),
+                0..SMALL_BUCKET_START                    => (0,                       "none"),
+                SMALL_BUCKET_START..MEDIUM_BUCKET_START  => (POT / SMALL_DIVISOR,   "small"),
+                MEDIUM_BUCKET_START..LARGE_BUCKET_START  => (POT / MEDIUM_DIVISOR,  "medium"),
+                LARGE_BUCKET_START..JACKPOT_BUCKET_START => (POT / LARGE_DIVISOR,   "large"),
+                _                                        => (POT / JACKPOT_DIVISOR, "jackpot"),
             };
-            assert_eq!(
-                amount, expected_amount,
-                "wrong amount for bucket {}",
-                bucket
-            );
-            assert_eq!(tier, expected_tier, "wrong tier for bucket {}", bucket);
+            assert_eq!(amount, expected_amount, "wrong amount for bucket {}", bucket);
+            assert_eq!(tier,   expected_tier,   "wrong tier for bucket {}",   bucket);
         }
     }
 
@@ -1772,7 +1786,7 @@ mod tests {
         );
 
         // Block with a real transaction — ticket issued to the miner.
-        let tx = Transaction::new_signed(&alice, bob.get_address(), 10, 1);
+        let tx = Transaction::new_signed(&alice, bob.get_address(), 10, 2);
         chain.apply_in_memory(
             next_block(&chain, vec![coinbase_tx("m2"), tx], GENESIS_TS + 2),
             None,
@@ -1806,7 +1820,7 @@ mod tests {
         chain.balances.insert(alice.get_address(), 500);
 
         // Block 1: miner_1 earns the ticket under test (requires a real tx).
-        let tx = Transaction::new_signed(&alice, bob.get_address(), 10, 1);
+        let tx = Transaction::new_signed(&alice, bob.get_address(), 10, 2);
         let b = mine_next_block(&chain, vec![coinbase_tx("miner_1"), tx], GENESIS_TS + 60);
         chain.apply_in_memory(b, None);
         // Capture pot after the fee from block 1 has entered it.
@@ -1840,7 +1854,7 @@ mod tests {
         chain.balances.insert(alice.get_address(), 500);
 
         // Block 1: issue the ticket under test.
-        let tx = Transaction::new_signed(&alice, bob.get_address(), 10, 1);
+        let tx = Transaction::new_signed(&alice, bob.get_address(), 10, 2);
         let b = mine_next_block(&chain, vec![coinbase_tx("miner_1"), tx], GENESIS_TS + 60);
         chain.apply_in_memory(b, None);
 
@@ -1866,14 +1880,12 @@ mod tests {
         let alice = lootcoin_core::wallet::Wallet::new();
         let bob = lootcoin_core::wallet::Wallet::new();
         let mut chain = make_chain();
-        // Use a large pot so all tiers produce a non-zero payout even with
-        // tx_count=1 and TX_MULTIPLIER_CAP=20 applied as a scaling factor.
         chain.seed_pot(100_000_000);
         chain.balances.insert(alice.get_address(), 500);
         let initial_pot = chain.get_pot();
 
-        // Block 1: miner_1 earns a ticket via 1 real tx (tx_count=1).
-        let tx = Transaction::new_signed(&alice, bob.get_address(), 10, 1);
+        // Block 1: miner_1 earns a ticket (has a real tx).
+        let tx = Transaction::new_signed(&alice, bob.get_address(), 10, 2);
         let b = mine_next_block(&chain, vec![coinbase_tx("miner_1"), tx], GENESIS_TS + 60);
         chain.apply_in_memory(b, None);
 
@@ -1887,29 +1899,28 @@ mod tests {
             chain.apply_in_memory(b, None);
         }
 
-        // The fee from block 1's tx (fee=1) entered the pot before settlement.
+        // Ticket settled at block 111. The outcome is probabilistic (88% no win),
+        // so we verify the invariants rather than a specific amount.
+        // fee=2 → floor(2/2)=1 to miner, 1 to pot → pot_with_fee = initial_pot + 1
         let pot_with_fee = initial_pot + 1;
-        let pot_after = chain.get_pot();
-        let payout = pot_with_fee - pot_after;
+        let pot_after    = chain.get_pot();
+        let payout       = pot_with_fee - pot_after; // 0 on no-win, positive on win
 
-        assert!(payout > 0, "lottery payout must be positive");
-        // Block had tx_count=1; multiplier = 1 / TX_MULTIPLIER_CAP.
-        // Bounds: (pot / divisor) * 1 / TX_MULTIPLIER_CAP for each tier extreme.
-        let min_payout = (pot_with_fee / SMALL_DIVISOR) / TX_MULTIPLIER_CAP;
-        let max_payout = (pot_with_fee / JACKPOT_DIVISOR) / TX_MULTIPLIER_CAP;
+        // Payout must be within [0, max jackpot].
+        let max_payout = pot_with_fee / JACKPOT_DIVISOR;
         assert!(
-            payout >= min_payout && payout <= max_payout,
-            "payout {} not in [{}, {}]",
+            payout <= max_payout,
+            "payout {} exceeds max jackpot {}",
             payout,
-            min_payout,
             max_payout
         );
 
-        // miner_1's balance = coinbase(1) + lottery payout.
+        // Pot and miner balance must be consistent with each other.
+        // miner_1 earns: 1 coinbase + 1 fee share (floor(fee=2 / 2) = 1) + lottery payout.
         assert_eq!(
             chain.get_balance("miner_1"),
-            1 + payout,
-            "miner_1 must receive both coinbase and lottery payout"
+            2 + payout, // coinbase + fee share + lottery payout (may be 0)
+            "miner_1 balance must equal coinbase plus fee share plus any lottery payout"
         );
     }
 
@@ -2117,12 +2128,12 @@ mod tests {
         chain.seed_pot(0);
 
         // Two main-chain blocks with real txs → main miners each earn a ticket.
-        let tx_a = Transaction::new_signed(&alice, bob.get_address(), 1, 1);
+        let tx_a = Transaction::new_signed(&alice, bob.get_address(), 1, 2);
         chain.apply_in_memory(
             next_block(&chain, vec![coinbase_tx("main_a"), tx_a], GENESIS_TS + 1),
             None,
         );
-        let tx_b = Transaction::new_signed(&alice, bob.get_address(), 1, 1);
+        let tx_b = Transaction::new_signed(&alice, bob.get_address(), 1, 2);
         chain.apply_in_memory(
             next_block(&chain, vec![coinbase_tx("main_b"), tx_b], GENESIS_TS + 2),
             None,
@@ -2134,21 +2145,21 @@ mod tests {
         // When reorg_to replays these, alice starts with 10_000 coins (from genesis),
         // so the transactions are valid regardless of what happened on the main chain.
         let genesis_hash = chain.blocks[0].hash.clone();
-        let tx_c = Transaction::new_signed(&alice, bob.get_address(), 1, 1);
+        let tx_c = Transaction::new_signed(&alice, bob.get_address(), 1, 2);
         let fc = block_at(
             1,
             genesis_hash.clone(),
             vec![coinbase_tx("fork_c"), tx_c],
             GENESIS_TS + 3,
         );
-        let tx_d = Transaction::new_signed(&alice, bob.get_address(), 1, 1);
+        let tx_d = Transaction::new_signed(&alice, bob.get_address(), 1, 2);
         let fd = block_at(
             2,
             fc.hash.clone(),
             vec![coinbase_tx("fork_d"), tx_d],
             GENESIS_TS + 4,
         );
-        let tx_e = Transaction::new_signed(&alice, bob.get_address(), 1, 1);
+        let tx_e = Transaction::new_signed(&alice, bob.get_address(), 1, 2);
         let fe = block_at(
             3,
             fd.hash.clone(),
@@ -2225,7 +2236,7 @@ mod tests {
             sender: "s".to_string(),
             receiver: "r".to_string(),
             amount: 0,
-            fee: 1,
+            fee: 2,
             nonce: 0,
             public_key: [0u8; 32],
             signature: vec![0xAB],

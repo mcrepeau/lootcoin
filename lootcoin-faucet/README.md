@@ -13,7 +13,7 @@ Returns the faucet's current configuration and balance.
   "faucet_address": "loot1…",
   "spendable_balance": 12500,
   "dispense_amount": 500,
-  "fee": 1,
+  "fee": 2,
   "cooldown_hours": 24
 }
 ```
@@ -56,7 +56,7 @@ All configuration is via environment variables.
 | `NODE_URL` | No | `http://127.0.0.1:3000` | Base URL of a lootcoin node |
 | `PORT` | No | `3030` | Port to listen on |
 | `DISPENSE_AMOUNT` | No | `500` | Coins sent per request |
-| `DISPENSE_FEE` | No | `1` | Transaction fee deducted from faucet balance |
+| `DISPENSE_FEE` | No | `2` | Transaction fee deducted from faucet balance (minimum is 2) |
 | `COOLDOWN_SECS` | No | `86400` | Cooldown between dispenses per address (seconds) |
 
 The faucet wallet's address is derived from `FAUCET_SECRET_KEY` and logged at startup. Fund that address to make the faucet operational.
@@ -76,7 +76,7 @@ faucet:
     NODE_URL: "http://node1:3000"
     FAUCET_SECRET_KEY: "<64-char hex seed>"
     DISPENSE_AMOUNT: "500"
-    DISPENSE_FEE: "1"
+    DISPENSE_FEE: "2"
     COOLDOWN_SECS: "86400"
 ```
 
