@@ -1,4 +1,5 @@
 use crate::db::Db;
+use crate::metrics::Metrics;
 use crate::loot_ticket::{
     LootTicket, JACKPOT_BUCKET_START, JACKPOT_DIVISOR, LARGE_BUCKET_START, LARGE_DIVISOR,
     MEDIUM_BUCKET_START, MEDIUM_DIVISOR, MIN_TX_FEE, PPM, REVEAL_BLOCKS, SMALL_BUCKET_START,
@@ -10,6 +11,7 @@ use lootcoin_core::{
     transaction::Transaction,
 };
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tracing::{debug, info};
 
@@ -113,6 +115,10 @@ pub struct Blockchain {
     /// main chain. Used instead of height to select the best chain during sync,
     /// preventing a peer from manipulating selection by lying about block count.
     chain_work: u128,
+
+    /// Optional metrics sink.  `None` in unit tests; `Some` in production.
+    /// Counters (fees, lottery wins) are incremented here as blocks are applied.
+    pub metrics: Option<Arc<Metrics>>,
 }
 
 impl Blockchain {
@@ -132,6 +138,7 @@ impl Blockchain {
             current_difficulty: INITIAL_DIFFICULTY,
             asert_anchor: None,
             chain_work: 0,
+            metrics: None,
         };
 
         chain.block_hashes.insert(genesis.hash.clone(), 0);
@@ -168,6 +175,10 @@ impl Blockchain {
 
     pub fn get_chain_work(&self) -> u128 {
         self.chain_work
+    }
+
+    pub fn get_last_block_timestamp(&self) -> u64 {
+        self.blocks.last().map(|b| b.timestamp).unwrap_or(0)
     }
 
     /// Average seconds between the last (up to 10) block intervals.
@@ -489,6 +500,9 @@ impl Blockchain {
                 self.pot -= payout;
                 *self.balances.entry(t.miner.clone()).or_insert(0) += payout;
                 payouts_this_block.push((t.miner.clone(), payout, tier.to_string()));
+                if let Some(m) = &self.metrics {
+                    m.record_lottery_win(tier, payout);
+                }
                 info!(
                     "Lottery: {} coins ({}) → {} (ticket from block {}, pot now {})",
                     payout, tier, t.miner, t.created_height, self.pot
@@ -522,6 +536,9 @@ impl Blockchain {
                 self.pot = self.pot.saturating_sub(miner_fee_share);
                 *self.balances.entry(miner_addr).or_insert(0) += miner_fee_share;
             }
+        }
+        if let Some(m) = &self.metrics {
+            m.record_fees(total_block_fees, miner_fee_share);
         }
 
         // 3) Record block

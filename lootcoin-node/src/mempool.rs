@@ -1,6 +1,7 @@
 use lootcoin_core::transaction::Transaction;
 use serde::Serialize;
 use std::collections::HashMap;
+use std::sync::Arc;
 
 #[derive(Serialize)]
 pub struct FeeStats {
@@ -23,12 +24,30 @@ struct MempoolEntry {
 
 pub struct Mempool {
     entries: HashMap<Vec<u8>, MempoolEntry>,
+    db: Option<Arc<crate::db::Db>>,
 }
 
 impl Mempool {
     pub fn new() -> Self {
         Self {
             entries: HashMap::new(),
+            db: None,
+        }
+    }
+
+    pub fn new_with_db(db: Arc<crate::db::Db>) -> Self {
+        Self {
+            entries: HashMap::new(),
+            db: Some(db),
+        }
+    }
+
+    /// Populate the in-memory map from persisted entries without triggering
+    /// write-through (the data is already in the DB).
+    pub fn restore(&mut self, entries: Vec<(Transaction, u64)>) {
+        for (tx, added_height) in entries {
+            let sig = tx.signature.clone();
+            self.entries.entry(sig).or_insert(MempoolEntry { tx, added_height });
         }
     }
 
@@ -42,28 +61,56 @@ impl Mempool {
         if self.entries.len() >= MAX_MEMPOOL_SIZE && !self.entries.contains_key(&tx.signature) {
             return false;
         }
+        let sig = tx.signature.clone();
+        let is_new = !self.entries.contains_key(&sig);
         self.entries
-            .entry(tx.signature.clone())
+            .entry(sig.clone())
             .or_insert(MempoolEntry {
-                tx,
+                tx: tx.clone(),
                 added_height: current_height,
             });
+        if is_new {
+            if let Some(db) = &self.db {
+                if let Err(e) = db.save_mempool_tx(&sig, &tx, current_height) {
+                    tracing::warn!("Failed to persist mempool tx: {}", e);
+                }
+            }
+        }
         true
     }
 
     /// Remove every transaction that was included in a block.
     pub fn remove_included(&mut self, included: &[Transaction]) {
+        let mut removed_sigs: Vec<Vec<u8>> = Vec::new();
         for tx in included {
-            self.entries.remove(&tx.signature);
+            if self.entries.remove(&tx.signature).is_some() {
+                removed_sigs.push(tx.signature.clone());
+            }
+        }
+        if let Some(db) = &self.db {
+            if let Err(e) = db.remove_mempool_txs(&removed_sigs) {
+                tracing::warn!("Failed to remove confirmed txs from persisted mempool: {}", e);
+            }
         }
     }
 
     /// Drop transactions whose nonce will never be valid again because they
     /// have been sitting in the pool for more than TX_EXPIRY_BLOCKS blocks.
     pub fn evict_expired(&mut self, current_height: u64) {
-        self.entries.retain(|_, entry| {
-            current_height.saturating_sub(entry.added_height) <= TX_EXPIRY_BLOCKS
+        let mut evicted_sigs: Vec<Vec<u8>> = Vec::new();
+        self.entries.retain(|sig, entry| {
+            if current_height.saturating_sub(entry.added_height) <= TX_EXPIRY_BLOCKS {
+                true
+            } else {
+                evicted_sigs.push(sig.clone());
+                false
+            }
         });
+        if let Some(db) = &self.db {
+            if let Err(e) = db.remove_mempool_txs(&evicted_sigs) {
+                tracing::warn!("Failed to remove evicted txs from persisted mempool: {}", e);
+            }
+        }
     }
 
     /// Returns every pending transaction together with the chain height at

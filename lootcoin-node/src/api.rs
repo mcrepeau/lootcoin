@@ -25,6 +25,7 @@ use lootcoin_core::block::MAX_BLOCK_TXS;
 use crate::db::Db;
 use crate::gossip::{Gossip, NodeEvent};
 use crate::mempool::{FeeStats, Mempool};
+use crate::metrics::Metrics;
 use lootcoin_core::{
     block::{meets_difficulty, Block},
     transaction::Transaction,
@@ -42,6 +43,7 @@ pub struct AppState {
     pub gossip: Arc<Gossip>,
     pub shutdown_rx: watch::Receiver<bool>,
     pub sse_subscribers: Arc<AtomicUsize>,
+    pub metrics: Arc<Metrics>,
 }
 
 /// RAII guard: decrements the SSE subscriber counter when dropped (i.e. when
@@ -906,6 +908,52 @@ pub async fn add_peer_handler(
     axum::http::StatusCode::OK
 }
 
+// ─── Metrics ──────────────────────────────────────────────────────────────────
+
+/// `GET /metrics` — Prometheus text exposition format.
+///
+/// Gauges (chain state, economics) are refreshed on every scrape by reading
+/// the current chain state.  Counters (fees, lottery wins) are maintained
+/// incrementally as blocks are applied and are simply read here.
+async fn metrics_handler(State(state): State<AppState>) -> impl axum::response::IntoResponse {
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    let m = &state.metrics;
+
+    // Update gauges from current chain state
+    {
+        let chain = state.chain.read().await;
+        let height = chain.get_height();
+        let pot    = chain.get_pot();
+        // Genesis supply is 100 M (1 M circulating + 99 M pot); coinbase adds 1/block.
+        let total  = 100_000_000u64.saturating_add(height);
+
+        m.chain_height.set(height as f64);
+        m.chain_difficulty.set(chain.get_difficulty());
+        if let Some(avg) = chain.get_avg_block_time_secs() {
+            m.avg_block_time_secs.set(avg);
+        }
+
+        let now_secs = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        m.secs_since_last_block.set(now_secs.saturating_sub(chain.get_last_block_timestamp()) as f64);
+
+        m.pot_coins.set(pot as f64);
+        m.total_supply.set(total as f64);
+        m.circulating_coins.set(total.saturating_sub(pot) as f64);
+    }
+
+    m.mempool_size.set(state.mempool.read().await.len() as f64);
+    m.peer_count.set(state.gossip.peer_urls().await.len() as f64);
+
+    (
+        [(axum::http::header::CONTENT_TYPE, "text/plain; version=0.0.4; charset=utf-8")],
+        m.encode_to_string(),
+    )
+}
+
 // ─── Router ───────────────────────────────────────────────────────────────────
 
 /// Build the application router.
@@ -934,6 +982,7 @@ pub fn router(state: AppState) -> Router {
         .route("/chain/head", get(chain_head_handler))
         .route("/peers", get(get_peers_handler))
         .route("/events", get(events_handler))
+        .route("/metrics", get(metrics_handler))
         .with_state(state)
         .layer(DefaultBodyLimit::max(256 * 1024)) // 256 KB — covers max block (~54 KB) with headroom
         .layer(TraceLayer::new_for_http())

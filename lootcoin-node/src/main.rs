@@ -4,6 +4,7 @@ mod db;
 mod gossip;
 mod loot_ticket;
 mod mempool;
+mod metrics;
 
 use api::{router, AppState};
 use blockchain::Blockchain;
@@ -375,13 +376,54 @@ async fn main() {
         announce_self(&peers, &my_url).await;
     }
 
-    let mempool = mempool::Mempool::new();
     let gossip = gossip::Gossip::new(peers);
 
     let db = Arc::new(db);
     let gossip = Arc::new(gossip);
 
+    // 9a. Restore persisted mempool entries, dropping any that are now confirmed
+    //     or have expired beyond the TX_EXPIRY_BLOCKS window.
+    let current_height = chain.read().await.get_height();
+    let mut mempool = mempool::Mempool::new_with_db(Arc::clone(&db));
+    match db.load_mempool() {
+        Ok(entries) => {
+            let confirmed_filtered: Vec<_> = entries
+                .into_iter()
+                .filter(|(tx, added_height)| {
+                    let is_confirmed = db.is_confirmed_signature(&tx.signature).unwrap_or(false);
+                    let is_expired = current_height.saturating_sub(*added_height) > mempool::TX_EXPIRY_BLOCKS;
+                    !is_confirmed && !is_expired
+                })
+                .collect();
+            let restored = confirmed_filtered.len();
+            mempool.restore(confirmed_filtered);
+            info!("Restored {} pending mempool transaction(s)", restored);
+        }
+        Err(e) => warn!("Failed to load persisted mempool: {}", e),
+    }
+
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
+
+    let metrics = Arc::new(metrics::Metrics::new());
+
+    // Seed counters from persisted history so they survive node restarts.
+    let chain_height = chain.read().await.get_height();
+    match db.scan_fee_totals() {
+        Ok((total_fees, miner_share)) => {
+            metrics.seed_fees(total_fees, miner_share, chain_height.saturating_sub(1));
+        }
+        Err(e) => warn!("failed to seed fee metrics: {}", e),
+    }
+    match db.scan_lottery_payout_totals() {
+        Ok(totals) => {
+            for (tier, (wins, coins)) in totals {
+                metrics.seed_lottery(&tier, wins, coins);
+            }
+        }
+        Err(e) => warn!("failed to seed lottery metrics: {}", e),
+    }
+
+    chain.write().await.metrics = Some(Arc::clone(&metrics));
 
     let state = AppState {
         db: Arc::clone(&db),
@@ -390,6 +432,7 @@ async fn main() {
         gossip: Arc::clone(&gossip),
         shutdown_rx,
         sse_subscribers: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+        metrics,
     };
 
     // 9. Subscribe to the SSE event streams of all known peers so we receive

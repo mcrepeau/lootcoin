@@ -23,6 +23,9 @@ const CONFIRMED_SIGS: TableDefinition<&[u8], u64> = TableDefinition::new("confir
 /// Stores lottery payouts per block so they can be surfaced in the TX_INDEX as
 /// synthetic "sender=lottery" entries visible in the explorer and wallet history.
 const LOTTERY_PAYOUTS: TableDefinition<u64, &[u8]> = TableDefinition::new("lottery_payouts");
+/// key: tx signature bytes, value: bincode-encoded (Transaction, added_height: u64)
+/// Survives node restarts; entries are removed when the tx is confirmed or evicted.
+const MEMPOOL: TableDefinition<&[u8], &[u8]> = TableDefinition::new("mempool");
 
 #[derive(Serialize)]
 pub struct TxRecord {
@@ -66,6 +69,7 @@ impl Db {
             wtxn.open_table(BLOCKS)?;
             wtxn.open_table(CONFIRMED_SIGS)?;
             wtxn.open_table(LOTTERY_PAYOUTS)?;
+            wtxn.open_table(MEMPOOL)?;
             wtxn.commit()?;
         }
         Ok(Self { db })
@@ -85,6 +89,7 @@ impl Db {
             wtxn.open_table(BLOCKS)?;
             wtxn.open_table(CONFIRMED_SIGS)?;
             wtxn.open_table(LOTTERY_PAYOUTS)?;
+            wtxn.open_table(MEMPOOL)?;
             wtxn.commit()?;
         }
         Ok(Self { db })
@@ -622,6 +627,52 @@ impl Db {
         Ok(())
     }
 
+    // ── Metrics seeding ───────────────────────────────────────────────────────
+
+    /// Scan every persisted block and return cumulative fee totals.
+    /// Returns `(total_fees_collected, miner_share_total)`.
+    /// Used once at startup to restore counter state after a restart.
+    pub fn scan_fee_totals(&self) -> Result<(u64, u64), Box<dyn std::error::Error>> {
+        let rtxn = self.db.begin_read()?;
+        let table = rtxn.open_table(BLOCKS)?;
+        let mut total_fees = 0u64;
+        let mut miner_share_total = 0u64;
+        for entry in table.range::<u64>(..)? {
+            let (_, v) = entry?;
+            let block: Block = bincode::deserialize(v.value())?;
+            let block_fees: u64 = block
+                .transactions
+                .iter()
+                .filter(|tx| !tx.sender.is_empty())
+                .map(|tx| tx.fee)
+                .sum();
+            total_fees = total_fees.saturating_add(block_fees);
+            miner_share_total = miner_share_total.saturating_add(block_fees / 2);
+        }
+        Ok((total_fees, miner_share_total))
+    }
+
+    /// Scan every persisted lottery payout and return per-tier totals.
+    /// Returns a map of `tier → (win_count, total_coins_paid)`.
+    /// Used once at startup to restore counter state after a restart.
+    pub fn scan_lottery_payout_totals(
+        &self,
+    ) -> Result<HashMap<String, (u64, u64)>, Box<dyn std::error::Error>> {
+        let rtxn = self.db.begin_read()?;
+        let table = rtxn.open_table(LOTTERY_PAYOUTS)?;
+        let mut totals: HashMap<String, (u64, u64)> = HashMap::new();
+        for entry in table.range::<u64>(..)? {
+            let (_, v) = entry?;
+            let payouts: Vec<(String, u64, String)> = bincode::deserialize(v.value())?;
+            for (_receiver, amount, tier) in payouts {
+                let e = totals.entry(tier).or_insert((0, 0));
+                e.0 += 1;
+                e.1 = e.1.saturating_add(amount);
+            }
+        }
+        Ok(totals)
+    }
+
     pub fn load_peers(&self) -> Result<Vec<String>, Box<dyn std::error::Error>> {
         let rtxn = self.db.begin_read()?;
         let table = rtxn.open_table(PEERS)?;
@@ -630,5 +681,70 @@ impl Db {
             .map(|e| e.map(|(k, _)| k.value().to_string()))
             .collect::<Result<_, _>>()?;
         Ok(peers)
+    }
+
+    // -------------------------------------------------------------------------
+    // Mempool persistence
+    // -------------------------------------------------------------------------
+
+    /// Persist a single pending transaction. Called write-through from Mempool::add_transaction.
+    pub fn save_mempool_tx(
+        &self,
+        sig: &[u8],
+        tx: &lootcoin_core::transaction::Transaction,
+        added_height: u64,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let data = bincode::serialize(&(tx, added_height))?;
+        let wtxn = self.db.begin_write()?;
+        {
+            let mut table = wtxn.open_table(MEMPOOL)?;
+            table.insert(sig, data.as_slice())?;
+        }
+        wtxn.commit()?;
+        Ok(())
+    }
+
+    /// Remove a pending transaction (confirmed or evicted).
+    pub fn remove_mempool_tx(&self, sig: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
+        let wtxn = self.db.begin_write()?;
+        {
+            let mut table = wtxn.open_table(MEMPOOL)?;
+            table.remove(sig)?;
+        }
+        wtxn.commit()?;
+        Ok(())
+    }
+
+    /// Remove multiple pending transactions in a single write transaction.
+    pub fn remove_mempool_txs(&self, sigs: &[Vec<u8>]) -> Result<(), Box<dyn std::error::Error>> {
+        if sigs.is_empty() {
+            return Ok(());
+        }
+        let wtxn = self.db.begin_write()?;
+        {
+            let mut table = wtxn.open_table(MEMPOOL)?;
+            for sig in sigs {
+                table.remove(sig.as_slice())?;
+            }
+        }
+        wtxn.commit()?;
+        Ok(())
+    }
+
+    /// Load all persisted mempool entries. Returns `(tx, added_height)` pairs.
+    pub fn load_mempool(
+        &self,
+    ) -> Result<Vec<(lootcoin_core::transaction::Transaction, u64)>, Box<dyn std::error::Error>>
+    {
+        let rtxn = self.db.begin_read()?;
+        let table = rtxn.open_table(MEMPOOL)?;
+        let mut entries = Vec::new();
+        for entry in table.range::<&[u8]>(..)? {
+            let (_, v) = entry?;
+            let (tx, added_height): (lootcoin_core::transaction::Transaction, u64) =
+                bincode::deserialize(v.value())?;
+            entries.push((tx, added_height));
+        }
+        Ok(entries)
     }
 }
