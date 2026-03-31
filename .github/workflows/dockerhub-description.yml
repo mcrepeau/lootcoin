@@ -1,0 +1,36 @@
+name: Update DockerHub descriptions
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "lootcoin-node/DOCKERHUB.md"
+      - "lootcoin-miner/DOCKERHUB.md"
+      - "lootcoin-faucet/DOCKERHUB.md"
+      - "lootcoin-web/DOCKERHUB.md"
+
+jobs:
+  push-descriptions:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - image: mcrepeau79/lootcoin-node
+            readme: lootcoin-node/DOCKERHUB.md
+          - image: mcrepeau79/lootcoin-miner
+            readme: lootcoin-miner/DOCKERHUB.md
+          - image: mcrepeau79/lootcoin-faucet
+            readme: lootcoin-faucet/DOCKERHUB.md
+          - image: mcrepeau79/lootcoin-web
+            readme: lootcoin-web/DOCKERHUB.md
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Push description to DockerHub — ${{ matrix.image }}
+        uses: peter-evans/dockerhub-description@v4
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+          repository: ${{ matrix.image }}
+          readme-filepath: ${{ matrix.readme }}
