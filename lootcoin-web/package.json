@@ -4,6 +4,6 @@
   "description": "Web frontend for Lootcoin",
   "type": "module",
   "scripts": {
-    "build": "wasm-pack build lootcoin-wallet --target web"
+    "build": "wasm-pack build ../lootcoin-wallet --target web"
   }
 }

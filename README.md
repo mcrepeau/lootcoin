@@ -14,7 +14,7 @@ This is a Cargo workspace. `lootcoin-core` is a separate library published on [c
 | `lootcoin-miner` | CPU miner — assembles blocks and searches for a valid PoW nonce |
 | `lootcoin-faucet` | Faucet service — dispenses testnet coins to any valid address |
 | `lootcoin-web` | Web UI — home page, wallet interface, block explorer, faucet page |
-| `lootcoin-web/lootcoin-wallet` | WebAssembly wallet — compiled to WASM and served by `lootcoin-web` |
+| `lootcoin-wallet` | Wallet crate — CLI tool (`lc`) and WebAssembly library for `lootcoin-web` |
 
 ---
 
@@ -74,6 +74,22 @@ FAUCET_SECRET_KEY=<64-char hex seed> cargo run -p lootcoin-faucet
 
 See [`lootcoin-faucet/README.md`](lootcoin-faucet/README.md) for the full environment variable reference.
 
+### CLI wallet
+
+```bash
+cargo build --release -p lootcoin-wallet --bin lc
+# Binary at target/release/lc (lc.exe on Windows)
+
+lc new                              # generate wallet, print recovery phrase
+lc import "word1 word2 … word12"   # restore from phrase
+lc balance                          # confirmed + spendable balance
+lc send loot1… 100 --fee 12        # sign and broadcast a transaction
+lc history                          # recent transaction history
+lc status                           # chain height, difficulty, pot
+```
+
+By default `lc` connects to `http://127.0.0.1:3000`. Override with `--node <URL>` or the `LOOTCOIN_NODE` environment variable. The wallet file is stored at `~/.lootcoin/wallet.json` by default (`LOOTCOIN_WALLET` to override).
+
 ### Web UI
 
 ```bash
@@ -130,4 +146,5 @@ services:
 - [`lootcoin-node/README.md`](lootcoin-node/README.md) — node configuration, API reference, consensus details
 - [`lootcoin-miner/README.md`](lootcoin-miner/README.md) — miner configuration and transaction selection
 - [`lootcoin-faucet/README.md`](lootcoin-faucet/README.md) — faucet API and configuration
+- [`lootcoin-wallet/README.md`](lootcoin-wallet/README.md) — CLI wallet commands, WASM build instructions, key derivation
 - [`lootcoin-web/README.md`](lootcoin-web/README.md) — building and serving the web UI

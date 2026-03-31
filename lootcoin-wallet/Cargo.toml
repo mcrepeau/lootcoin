@@ -12,6 +12,10 @@ license = "AGPL-3.0-only"
 # For browser WASM + optional native reuse
 crate-type = ["cdylib", "rlib"]
 
+[[bin]]
+name = "lc"
+path = "src/bin/lc.rs"
+
 [dependencies]
 lootcoin-core = "1.3"
 wasm-bindgen  = "0.2"
@@ -23,5 +27,11 @@ rand          = "0.8"
 # Enables WebCrypto-backed OsRng for all crates in the WASM dependency tree
 # (including lootcoin-core's use of rand::rngs::OsRng via feature unification).
 getrandom     = { version = "0.2", features = ["js"] }
+
+# CLI-only dependencies — excluded from WASM builds automatically.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+clap    = { version = "4", features = ["derive", "env"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "blocking", "rustls-tls"] }
+dirs    = "5"
 
 

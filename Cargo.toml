@@ -3,7 +3,7 @@ members = [
     "lootcoin-node",
     "lootcoin-miner",
     "lootcoin-faucet",
-    "lootcoin-web/lootcoin-wallet",
+    "lootcoin-wallet",
 ]
 resolver = "2"
 

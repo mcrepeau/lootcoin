@@ -7,14 +7,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certifi
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /build
-COPY lootcoin-web/lootcoin-wallet ./lootcoin-web/lootcoin-wallet
-COPY Cargo.lock                   ./
+COPY lootcoin-wallet ./lootcoin-wallet
+COPY Cargo.lock      ./
 # Minimal workspace so cargo can resolve the path without the other members.
-RUN printf '[workspace]\nmembers = ["lootcoin-web/lootcoin-wallet"]\nresolver = "2"\n' > Cargo.toml
-RUN wasm-pack build lootcoin-web/lootcoin-wallet --target web \
+RUN printf '[workspace]\nmembers = ["lootcoin-wallet"]\nresolver = "2"\n' > Cargo.toml
+RUN wasm-pack build lootcoin-wallet --target web \
     && wasm-opt -Oz \
-         -o lootcoin-web/lootcoin-wallet/pkg/lootcoin_wallet_bg.wasm \
-            lootcoin-web/lootcoin-wallet/pkg/lootcoin_wallet_bg.wasm
+         -o lootcoin-wallet/pkg/lootcoin_wallet_bg.wasm \
+            lootcoin-wallet/pkg/lootcoin_wallet_bg.wasm
 
 # ── Stage 2: serve static files ───────────────────────────────────────────────
 FROM nginx:alpine-slim
@@ -24,7 +24,7 @@ COPY lootcoin-web/*.html lootcoin-web/*.css lootcoin-web/*.js lootcoin-web/favic
      /usr/share/nginx/html/
 
 # Overlay the compiled WASM package from the builder.
-COPY --from=wasm-builder /build/lootcoin-web/lootcoin-wallet/pkg/ \
+COPY --from=wasm-builder /build/lootcoin-wallet/pkg/ \
      /usr/share/nginx/html/lootcoin-wallet/pkg/
 
 EXPOSE 80
