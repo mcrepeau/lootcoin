@@ -9,7 +9,7 @@ WORKDIR /app
 COPY lootcoin-node ./lootcoin-node
 COPY Cargo.lock    ./
 # Minimal workspace so cargo can resolve the path without the other members.
-RUN printf '[workspace]\nmembers = ["lootcoin-node"]\nresolver = "2"\n' > Cargo.toml
+RUN printf '[workspace]\nmembers = ["lootcoin-node"]\nresolver = "2"\n\n[workspace.package]\nversion = "0.0.0"\nedition = "2021"\nauthors = []\nlicense = "AGPL-3.0-only"\n' > Cargo.toml
 RUN cargo build --release -p lootcoin-node \
     && strip target/release/lootcoin-node
 
