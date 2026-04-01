@@ -102,6 +102,58 @@ The web UI requires a running node. By default it points at `http://127.0.0.1:30
 
 ---
 
+## Monitoring with Prometheus
+
+Every node exposes a Prometheus metrics endpoint at `GET /metrics`. Add a Prometheus instance to your `docker-compose.yml` to scrape it:
+
+```yaml
+services:
+  prometheus:
+    image: prom/prometheus:latest
+    ports:
+      - "9090:9090"
+    volumes:
+      - prometheus-data:/prometheus
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.retention.time=30d
+    configs:
+      - source: prometheus_config
+        target: /etc/prometheus/prometheus.yml
+
+configs:
+  prometheus_config:
+    content: |
+      global:
+        scrape_interval: 15s
+
+      scrape_configs:
+        - job_name: lootcoin-node
+          static_configs:
+            - targets:
+                - node:3000
+
+volumes:
+  prometheus-data:
+```
+
+Then open `http://localhost:9090` to query metrics. Key metrics exposed:
+
+| Metric | Type | Description |
+|---|---|---|
+| `lootcoin_chain_height` | Gauge | Current chain height in blocks |
+| `lootcoin_chain_difficulty` | Gauge | Current mining difficulty in fractional bits |
+| `lootcoin_avg_block_time_secs` | Gauge | Rolling average block time over the last 10 blocks |
+| `lootcoin_pot_coins` | Gauge | Current lottery pot balance |
+| `lootcoin_circulating_coins` | Gauge | Coins in circulation |
+| `lootcoin_mempool_size` | Gauge | Pending transactions |
+| `lootcoin_peer_count` | Gauge | Known peers |
+| `lootcoin_fees_collected_total` | Counter | Cumulative transaction fees collected |
+| `lootcoin_lottery_wins_total` | Counter | Lottery wins by tier (`small`, `medium`, `large`, `jackpot`) |
+| `lootcoin_blocks_total` | Counter | Cumulative blocks applied to the chain |
+
+---
+
 ## Web UI configuration
 
 The node and faucet URLs are set at runtime via `config.js`. The default bundled in the Docker image works for local docker-compose. For any other deployment, mount your own:

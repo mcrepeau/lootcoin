@@ -45,6 +45,32 @@ services:
       RUST_LOG: info
       NODE_URLS: "http://node:3000"
       MINER_ADDRESS: "${MINER_ADDRESS}"
+      
+  prometheus:
+    image: prom/prometheus:latest
+    ports:
+      - "9090:9090"
+    volumes:
+      - prometheus-data:/prometheus
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.retention.time=30d
+    configs:
+      - source: prometheus_config
+        target: /etc/prometheus/prometheus.yml
+
+configs:
+  prometheus_config:
+    content: |
+      global:
+        scrape_interval: 15s
+      
+      scrape_configs:
+        - job_name: lootcoin-node
+          static_configs:
+            - targets:
+                - node:3000
 
 volumes:
   node-data:
+  prometheus-data:
