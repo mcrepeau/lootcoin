@@ -433,6 +433,9 @@ async fn main() {
         shutdown_rx,
         sse_subscribers: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         metrics,
+        // All nodes currently replay from genesis — set to 0 (archive).
+        // Will be set to the checkpoint height once snapshot sync is implemented.
+        history_start: 0,
     };
 
     // 9. Subscribe to the SSE event streams of all known peers so we receive

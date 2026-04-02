@@ -6,10 +6,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends cmake perl \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
+COPY Cargo.toml    ./workspace-Cargo.toml
 COPY lootcoin-node ./lootcoin-node
 COPY Cargo.lock    ./
 # Minimal workspace so cargo can resolve the path without the other members.
-RUN printf '[workspace]\nmembers = ["lootcoin-node"]\nresolver = "2"\n\n[workspace.package]\nversion = "0.0.0"\nedition = "2021"\nauthors = []\nlicense = "AGPL-3.0-only"\n' > Cargo.toml
+# Version is extracted from the root workspace manifest — single source of truth.
+RUN VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' workspace-Cargo.toml | head -1) && \
+    printf '[workspace]\nmembers = ["lootcoin-node"]\nresolver = "2"\n\n[workspace.package]\nversion = "%s"\nedition = "2021"\nauthors = []\nlicense = "AGPL-3.0-only"\n' "$VERSION" > Cargo.toml
 RUN cargo build --release -p lootcoin-node \
     && strip target/release/lootcoin-node
 

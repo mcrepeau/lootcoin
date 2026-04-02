@@ -44,6 +44,10 @@ pub struct AppState {
     pub shutdown_rx: watch::Receiver<bool>,
     pub sse_subscribers: Arc<AtomicUsize>,
     pub metrics: Arc<Metrics>,
+    /// Lowest block height for which this node has complete block and TX-index
+    /// data. 0 for archive nodes (full replay from genesis); set to the
+    /// checkpoint height for nodes that bootstrapped from a snapshot.
+    pub history_start: u64,
 }
 
 /// RAII guard: decrements the SSE subscriber counter when dropped (i.e. when
@@ -96,6 +100,17 @@ pub struct ChainHeadResponse {
     pub chain_work_hex: String,
     /// Current lottery pot balance in coins.
     pub pot: u64,
+}
+
+#[derive(Serialize)]
+pub struct NodeInfoResponse {
+    /// Semver version of the running node binary.
+    pub version: &'static str,
+    /// Lowest block height for which this node has complete history.
+    /// 0 means full archive (replayed from genesis).
+    pub history_start: u64,
+    /// This node's publicly reachable URL, if configured via NODE_URL.
+    pub node_url: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -587,6 +602,14 @@ pub async fn chain_head_handler(State(state): State<AppState>) -> Json<ChainHead
     })
 }
 
+pub async fn node_info_handler(State(state): State<AppState>) -> Json<NodeInfoResponse> {
+    Json(NodeInfoResponse {
+        version: env!("CARGO_PKG_VERSION"),
+        history_start: state.history_start,
+        node_url: std::env::var("NODE_URL").ok(),
+    })
+}
+
 /// Accept an externally mined block and try to append it.
 pub async fn submit_block_handler(
     State(state): State<AppState>,
@@ -980,6 +1003,7 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/blocks", get(get_blocks_handler))
         .route("/chain/head", get(chain_head_handler))
+        .route("/node/info", get(node_info_handler))
         .route("/peers", get(get_peers_handler))
         .route("/events", get(events_handler))
         .route("/metrics", get(metrics_handler))
