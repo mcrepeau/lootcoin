@@ -28,7 +28,7 @@ COPY --from=builder /app/target/release/lootcoin-faucet /usr/local/bin/lootcoin-
 # NODE_URL           – node to submit transactions to (default: http://127.0.0.1:3000)
 # PORT               – HTTP listen port (default: 3030)
 # DISPENSE_AMOUNT    – coins sent per request (default: 500)
-# DISPENSE_FEE       – transaction fee paid by the faucet (default: 1)
+# DISPENSE_FEE       – transaction fee paid by the faucet (default: 2, minimum required by the protocol)
 # COOLDOWN_SECS      – seconds between dispenses per address (default: 86400 = 24 h)
 # RUST_LOG           – log filter (default: info)
 ENV PORT=3030

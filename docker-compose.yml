@@ -32,7 +32,7 @@ services:
       NODE_URL: "http://node:3000"
       FAUCET_SECRET_KEY: "${FAUCET_SECRET_KEY}"
       DISPENSE_AMOUNT: "500"
-      DISPENSE_FEE: "1"
+      DISPENSE_FEE: "2"
       COOLDOWN_SECS: "86400"
 
   miner:

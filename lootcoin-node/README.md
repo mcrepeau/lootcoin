@@ -4,41 +4,20 @@ A proof-of-work blockchain where transaction fees don't go to miners — they ac
 
 ---
 
-## Concept
+## Features
 
-In Bitcoin, miners collect transaction fees directly. In Lootcoin, every fee paid by a sender is added to a shared pot. Every time a miner mines a block they receive a **lottery ticket**. After a maturity period, each ticket is settled against a window of future block hashes used as provably-fair randomness. The payout is a fraction of the pot — small wins are common, jackpots are rare.
+### Genesis
 
-This creates a different incentive structure: miners are rewarded not just for the block they mine, but for a delayed probabilistic payout that depends on future miners' work, making the system self-reinforcing.
+The chain has a single hardcoded genesis block shared by all nodes:
 
----
-
-## How the lottery works
-
-1. **One ticket per block** — every block that contains at least one non-coinbase transaction earns the miner a lottery ticket.
-
-2. **Maturity** — the ticket becomes eligible for settlement after `TICKET_MATURITY = 100` blocks.
-
-3. **Reveal window** — settlement uses the hashes of the 10 blocks following maturity (`REVEAL_BLOCKS = 10`) as entropy. An attacker would need to control all 10 consecutive blocks to steer the outcome.
-
-4. **Single draw** — at block H+110 the ticket is settled against the pot *at that moment* using one probabilistic draw:
-
-| Probability | Tier | Payout formula | Expected frequency |
-|---|---|---|---|
-| 62.00% | no-win | — | — |
-| 36.25% | `small` | `pot / 400,000` | every ~3 blocks |
-| 1.67% | `medium` | `pot / 30,000` | every ~60 blocks (~1 h) |
-| 0.07% | `large` | `pot / 2,000` | every ~1,440 blocks (~1 day) |
-| 0.01% | `jackpot` | `pot / 500` | every ~10,080 blocks (~1 week) |
-
-Payouts are a flat fraction of the current pot — independent of how many transactions were in the block. No-win tickets produce no entry in `lottery_payouts`.
-
-5. **Fee split** — each block's transaction fees are split 50/50: half goes directly to the block's miner as immediate income, half accumulates in the lottery pot. This is the per-transaction incentive for miners; the lottery rewards the block itself.
-
-6. **Pot funding** — seeded at genesis with 99,000,000 coins; replenished by 50% of every transaction fee thereafter. Payouts are fractions of the pot so it never fully drains. The pot naturally trends from its genesis level toward a long-run equilibrium determined by network activity.
+- **Timestamp** `1,748,000,000` (2025-05-23) — fixed so every node produces an identical genesis hash
+- **Genesis address** `9bbec16bcab5f2d447eead5964d8e427aa9e35db490ca1ecd5ec872b35471f32`
+- **Genesis wallet** receives 1,000,000 coins; the corresponding secret key is held by the chain operator and is never embedded in the binary
+- **Lottery pot** seeded with 99,000,000 coins at genesis
 
 ---
 
-## Gossip protocol
+### Gossip protocol
 
 Nodes propagate blocks and transactions over **Server-Sent Events (SSE)** rather than a push-based peer protocol. When a node receives a new block or transaction it publishes a JSON event on an internal broadcast channel; every open `/events` connection receives it immediately.
 
@@ -50,8 +29,9 @@ Nodes propagate blocks and transactions over **Server-Sent Events (SSE)** rather
 
 **Sync on reconnect** — whenever a peer subscription reconnects after a drop, the node pulls any missing blocks from that peer before resuming the live stream, closing gaps that opened while the connection was down.
 
+---
 
-## Difficulty adjustment
+### Difficulty adjustment
 
 Difficulty is adjusted **every block** using ASERT (Absolutely Scheduled Exponentially weighted Rolling Target). The target block time is `60 s`.
 
@@ -71,7 +51,7 @@ Difficulty is expressed in **fractional bits** (e.g. `26.47`). A 0.65% deviation
 
 ---
 
-## Hash function
+### Hash function
 
 Lootcoin uses [CubeHash-256](https://en.wikipedia.org/wiki/CubeHash) instead of SHA-256. CubeHash is a NIST SHA-3 finalist designed to be simple, parallelisable, and resistant to length-extension attacks.
 
@@ -79,14 +59,120 @@ The block hash covers `(index, previous_hash, timestamp, nonce, tx_root)` serial
 
 ---
 
-## Genesis
+### API
 
-The chain has a single hardcoded genesis block shared by all nodes:
+**GET /node/info**
 
-- **Timestamp** `1,748,000,000` (2025-05-23) — fixed so every node produces an identical genesis hash
-- **Genesis address** `9bbec16bcab5f2d447eead5964d8e427aa9e35db490ca1ecd5ec872b35471f32`
-- **Genesis wallet** receives 1,000,000 coins; the corresponding secret key is held by the chain operator and is never embedded in the binary
-- **Lottery pot** seeded with 99,000,000 coins at genesis
+Node-specific metadata. Unlike `/chain/head`, this response varies per node.
+
+```json
+{
+  "version": "1.3.3",
+  "history_start": 0,
+  "node_url": "http://mynode.example.com:3000"
+}
+```
+
+| Field | Description |
+|---|---|
+| `version` | Binary version compiled into the node |
+| `history_start` | Lowest block height available on this node. `0` means the node has the full chain from genesis (archive node). A non-zero value indicates the node synced from a checkpoint and cannot serve blocks before that height |
+| `node_url` | This node's public URL as set by `NODE_URL`, or `null` if not configured |
+
+**GET /chain/head**
+
+Current chain state.
+
+```json
+{
+  "height": 142,
+  "difficulty": 18.47,
+  "latest_hash_hex": "0000a3f1...",
+  "mempool_size": 3,
+  "avg_block_time_secs": 61.4,
+  "chain_work_hex": "00000000000000000000000000057a3c",
+  "pot": 99901234
+}
+```
+
+**GET /blocks?from=N&limit=N**
+
+Returns up to `limit` blocks starting at height `from`. Each block includes a `lottery_payouts` field listing any pot payouts settled at that height.
+
+**GET /balance/:address**
+
+```json
+{
+  "balance": 10000,
+  "spendable_balance": 9500
+}
+```
+
+`balance` is the confirmed on-chain balance. `spendable_balance` subtracts any pending outgoing transactions currently in the mempool, giving the amount safely available to spend without risking a double-spend rejection.
+
+**GET /address/:address/transactions?offset=N&limit=N**
+
+Paginated transaction history for an address. Lottery payouts appear as entries with `sender: "lottery"`.
+
+**GET /mempool**
+
+All pending (unconfirmed) transactions.
+
+**GET /mempool/fees**
+
+Fee distribution across pending transactions.
+
+```json
+{
+  "count": 42,
+  "min": 1,
+  "max": 120,
+  "median": 12,
+  "p25": 5,
+  "p75": 60
+}
+```
+
+All fields except `count` are `null` when the mempool is empty. Useful for wallets to detect whether the network is idle (`count ≤ 200`, in which case any fee gets in immediately) and to show relevant context when it is busy.
+
+**GET /lottery/recent-payouts?tier=<tier>&limit=N**
+
+Most recent lottery payouts, newest first. Both parameters are optional.
+
+`tier` filters by outcome tier: `small`, `medium`, `large`, or `jackpot`. Omit to return all tiers.
+`limit` defaults to `10`, maximum `100`.
+
+```json
+[
+  {
+    "block_index": 1523,
+    "block_timestamp": 1748123456,
+    "receiver": "33693c36...",
+    "amount": 499500,
+    "tier": "jackpot"
+  }
+]
+```
+
+**GET /events**
+
+Server-Sent Events stream. Emits a `block` event whenever a new block is accepted and a `transaction` event whenever a new transaction enters the mempool. Useful for real-time UIs and for miners that need to cancel stale work immediately.
+
+**POST /blocks**
+
+Submit a mined block (JSON-encoded `Block`). Returns `200` on acceptance, `400` on rejection with a reason string.
+
+**POST /transactions**
+
+Submit a signed transaction. Returns `200` on acceptance, `400` on rejection.
+
+**GET /peers**
+
+Known peer URLs.
+
+**POST /peers**
+
+Add a peer URL to the known-peers list.
 
 ---
 
@@ -115,118 +201,3 @@ On first boot the node creates `./data/` and initialises the database. Subsequen
 | `RUST_LOG` | `info` | Log filter (e.g. `debug`, `lootcoin_node=trace`) |
 
 ---
-
-## API
-
-### `GET /node/info`
-
-Node-specific metadata. Unlike `/chain/head`, this response varies per node.
-
-```json
-{
-  "version": "1.3.3",
-  "history_start": 0,
-  "node_url": "http://mynode.example.com:3000"
-}
-```
-
-| Field | Description |
-|---|---|
-| `version` | Binary version compiled into the node |
-| `history_start` | Lowest block height available on this node. `0` means the node has the full chain from genesis (archive node). A non-zero value indicates the node synced from a checkpoint and cannot serve blocks before that height |
-| `node_url` | This node's public URL as set by `NODE_URL`, or `null` if not configured |
-
-### `GET /chain/head`
-
-Current chain state.
-
-```json
-{
-  "height": 142,
-  "difficulty": 18.47,
-  "latest_hash_hex": "0000a3f1...",
-  "mempool_size": 3,
-  "avg_block_time_secs": 61.4,
-  "chain_work_hex": "00000000000000000000000000057a3c",
-  "pot": 99901234
-}
-```
-
-### `GET /blocks?from=N&limit=N`
-
-Returns up to `limit` blocks starting at height `from`. Each block includes a `lottery_payouts` field listing any pot payouts settled at that height.
-
-### `GET /balance/:address`
-
-```json
-{
-  "balance": 10000,
-  "spendable_balance": 9500
-}
-```
-
-`balance` is the confirmed on-chain balance. `spendable_balance` subtracts any pending outgoing transactions currently in the mempool, giving the amount safely available to spend without risking a double-spend rejection.
-
-### `GET /address/:address/transactions?offset=N&limit=N`
-
-Paginated transaction history for an address. Lottery payouts appear as entries with `sender: "lottery"`.
-
-### `GET /mempool`
-
-All pending (unconfirmed) transactions.
-
-### `GET /mempool/fees`
-
-Fee distribution across pending transactions.
-
-```json
-{
-  "count": 42,
-  "min": 1,
-  "max": 120,
-  "median": 12,
-  "p25": 5,
-  "p75": 60
-}
-```
-
-All fields except `count` are `null` when the mempool is empty. Useful for wallets to detect whether the network is idle (`count ≤ 200`, in which case any fee gets in immediately) and to show relevant context when it is busy.
-
-### `GET /lottery/recent-payouts?tier=<tier>&limit=N`
-
-Most recent lottery payouts, newest first. Both parameters are optional.
-
-`tier` filters by outcome tier: `small`, `medium`, `large`, or `jackpot`. Omit to return all tiers.
-`limit` defaults to `10`, maximum `100`.
-
-```json
-[
-  {
-    "block_index": 1523,
-    "block_timestamp": 1748123456,
-    "receiver": "33693c36...",
-    "amount": 499500,
-    "tier": "jackpot"
-  }
-]
-```
-
-### `GET /events`
-
-Server-Sent Events stream. Emits a `block` event whenever a new block is accepted and a `transaction` event whenever a new transaction enters the mempool. Useful for real-time UIs and for miners that need to cancel stale work immediately.
-
-### `POST /blocks`
-
-Submit a mined block (JSON-encoded `Block`). Returns `200` on acceptance, `400` on rejection with a reason string.
-
-### `POST /transactions`
-
-Submit a signed transaction. Returns `200` on acceptance, `400` on rejection.
-
-### `GET /peers`
-
-Known peer URLs.
-
-### `POST /peers`
-
-Add a peer URL to the known-peers list.

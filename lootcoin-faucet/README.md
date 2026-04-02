@@ -4,7 +4,7 @@ HTTP faucet service for the [Lootcoin](https://github.com/mcrepeau/lootcoin) tes
 
 ## API
 
-### `GET /status`
+**GET /status**
 
 Returns the faucet's current configuration and balance.
 
@@ -22,7 +22,7 @@ Returns the faucet's current configuration and balance.
 
 ---
 
-### `POST /faucet`
+**POST /faucet**
 
 Request coins for an address.
 

@@ -26,6 +26,9 @@ const LOTTERY_PAYOUTS: TableDefinition<u64, &[u8]> = TableDefinition::new("lotte
 /// key: tx signature bytes, value: bincode-encoded (Transaction, added_height: u64)
 /// Survives node restarts; entries are removed when the tx is confirmed or evicted.
 const MEMPOOL: TableDefinition<&[u8], &[u8]> = TableDefinition::new("mempool");
+/// key: block height (u64), value: bincode-encoded CheckpointState.
+/// One entry every CHECKPOINT_INTERVAL blocks; stale entries are pruned on reorg.
+const CHECKPOINTS: TableDefinition<u64, &[u8]> = TableDefinition::new("checkpoints");
 
 #[derive(Serialize)]
 pub struct TxRecord {
@@ -70,6 +73,7 @@ impl Db {
             wtxn.open_table(CONFIRMED_SIGS)?;
             wtxn.open_table(LOTTERY_PAYOUTS)?;
             wtxn.open_table(MEMPOOL)?;
+            wtxn.open_table(CHECKPOINTS)?;
             wtxn.commit()?;
         }
         Ok(Self { db })
@@ -90,6 +94,7 @@ impl Db {
             wtxn.open_table(CONFIRMED_SIGS)?;
             wtxn.open_table(LOTTERY_PAYOUTS)?;
             wtxn.open_table(MEMPOOL)?;
+            wtxn.open_table(CHECKPOINTS)?;
             wtxn.commit()?;
         }
         Ok(Self { db })
@@ -746,5 +751,69 @@ impl Db {
             entries.push((tx, added_height));
         }
         Ok(entries)
+    }
+
+    // -------------------------------------------------------------------------
+    // Checkpoint snapshots
+    // -------------------------------------------------------------------------
+
+    /// Persist a serialized CheckpointState at the given block height.
+    /// Overwrites any existing entry at that height.
+    pub fn save_checkpoint(&self, height: u64, data: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
+        let wtxn = self.db.begin_write()?;
+        {
+            let mut table = wtxn.open_table(CHECKPOINTS)?;
+            table.insert(height, data)?;
+        }
+        wtxn.commit()?;
+        Ok(())
+    }
+
+    /// Return the highest stored checkpoint as `(height, raw_bytes)`, or `None`
+    /// if no checkpoints exist yet.
+    pub fn load_latest_checkpoint(
+        &self,
+    ) -> Result<Option<(u64, Vec<u8>)>, Box<dyn std::error::Error>> {
+        let rtxn = self.db.begin_read()?;
+        let table = rtxn.open_table(CHECKPOINTS)?;
+        match table.range::<u64>(..)?.rev().next() {
+            Some(Ok((k, v))) => Ok(Some((k.value(), v.value().to_vec()))),
+            Some(Err(e)) => Err(e.into()),
+            None => Ok(None),
+        }
+    }
+
+    /// Delete all checkpoint entries with key >= `from_height`.
+    /// Called after a reorg to purge checkpoints from the displaced chain.
+    pub fn delete_checkpoints_from(
+        &self,
+        from_height: u64,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let wtxn = self.db.begin_write()?;
+        {
+            let mut table = wtxn.open_table(CHECKPOINTS)?;
+            let keys: Vec<u64> = table
+                .range(from_height..)?
+                .map(|e| e.map(|(k, _)| k.value()))
+                .collect::<Result<_, _>>()?;
+            for k in keys {
+                table.remove(k)?;
+            }
+        }
+        wtxn.commit()?;
+        Ok(())
+    }
+
+    /// Load every block with index >= `from` in ascending order.
+    /// Used at startup to replay only the tail after restoring a checkpoint.
+    pub fn load_blocks_from(&self, from: u64) -> Result<Vec<Block>, Box<dyn std::error::Error>> {
+        let rtxn = self.db.begin_read()?;
+        let table = rtxn.open_table(BLOCKS)?;
+        let mut blocks = Vec::new();
+        for entry in table.range(from..)? {
+            let (_, v) = entry?;
+            blocks.push(bincode::deserialize(v.value())?);
+        }
+        Ok(blocks)
     }
 }

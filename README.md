@@ -4,6 +4,40 @@ A proof-of-work blockchain with a **lottery-based fee mechanism**: half of every
 
 ---
 
+## Concept
+
+In Bitcoin, miners collect transaction fees directly. In Lootcoin, every fee paid by a sender is added to a shared pot. Every time a miner mines a block they receive a **lottery ticket**. After a maturity period, each ticket is settled against a window of future block hashes used as provably-fair randomness. The payout is a fraction of the pot — small wins are common, jackpots are rare.
+
+This creates a different incentive structure: miners are rewarded not just for the block they mine, but for a delayed probabilistic payout that depends on future miners' work, making the system self-reinforcing.
+
+---
+
+## How the lottery works
+
+1. **One ticket per block** — every block that contains at least one non-coinbase transaction earns the miner a lottery ticket.
+
+2. **Maturity** — the ticket becomes eligible for settlement after `TICKET_MATURITY = 100` blocks.
+
+3. **Reveal window** — settlement uses the hashes of the 10 blocks following maturity (`REVEAL_BLOCKS = 10`) as entropy. An attacker would need to control all 10 consecutive blocks to steer the outcome.
+
+4. **Single draw** — at block H+110 the ticket is settled against the pot *at that moment* using one probabilistic draw:
+
+| Probability | Tier | Payout formula | Expected frequency |
+|---|---|---|---|
+| 62.00% | no-win | — | — |
+| 36.25% | `small` | `pot / 400,000` | every ~3 blocks |
+| 1.67% | `medium` | `pot / 30,000` | every ~60 blocks (~1 h) |
+| 0.07% | `large` | `pot / 2,000` | every ~1,440 blocks (~1 day) |
+| 0.01% | `jackpot` | `pot / 500` | every ~10,080 blocks (~1 week) |
+
+Payouts are a flat fraction of the current pot — independent of how many transactions were in the block. No-win tickets produce no entry in `lottery_payouts`.
+
+5. **Fee split** — each block's transaction fees are split 50/50: half goes directly to the block's miner as immediate income, half accumulates in the lottery pot. This is the per-transaction incentive for miners; the lottery rewards the block itself.
+
+6. **Pot funding** — seeded at genesis with 99,000,000 coins; replenished by 50% of every transaction fee thereafter. Payouts are fractions of the pot so it never fully drains. The pot naturally trends from its genesis level toward a long-run equilibrium determined by network activity.
+
+---
+
 ## Repository layout
 
 This is a Cargo workspace. `lootcoin-core` is a separate library published on [crates.io](https://crates.io/crates/lootcoin-core).

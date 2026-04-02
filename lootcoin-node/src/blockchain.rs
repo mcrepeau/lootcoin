@@ -1,5 +1,6 @@
 use crate::db::Db;
 use crate::metrics::Metrics;
+use serde::{Deserialize, Serialize};
 use crate::loot_ticket::{
     LootTicket, JACKPOT_BUCKET_START, JACKPOT_DIVISOR, LARGE_BUCKET_START, LARGE_DIVISOR,
     MEDIUM_BUCKET_START, MEDIUM_DIVISOR, MIN_TX_FEE, PPM, REVEAL_BLOCKS, SMALL_BUCKET_START,
@@ -57,6 +58,26 @@ const MAX_ORPHAN_POOL_SIZE: usize = MAX_ORPHAN_DEPTH as usize * MAX_ORPHANS_PER_
 /// Comfortably exceeds MAX_ORPHAN_DEPTH so in-memory reorgs work without
 /// touching the DB. Deeper reorgs fall back to DB automatically.
 const REORG_WINDOW: usize = 100;
+
+/// How often (in blocks) to snapshot the full derived state to redb.
+/// On restart the node loads the latest checkpoint and replays only the tail,
+/// skipping the O(N) full-chain replay that would otherwise be required.
+pub const CHECKPOINT_INTERVAL: u64 = 1_000;
+
+/// Full derived state captured at every CHECKPOINT_INTERVAL blocks.
+/// Stored in the CHECKPOINTS table of redb, keyed by block height.
+#[derive(Serialize, Deserialize)]
+pub struct CheckpointState {
+    pub balances: HashMap<String, u64>,
+    pub pot: u64,
+    pub chain_work: u128,
+    /// Hash of the block at which this checkpoint was taken.
+    /// Verified at startup to detect checkpoints from a reorged chain.
+    pub block_hash: Vec<u8>,
+    pub current_difficulty: f64,
+    pub asert_anchor: Option<(u64, u64, f64)>,
+    pub tickets: Vec<LootTicket>,
+}
 
 pub enum BlockOutcome {
     Applied,
@@ -210,6 +231,51 @@ impl Blockchain {
 
     pub fn restore_tickets(&mut self, tickets: Vec<LootTicket>) {
         self.pending_tickets = tickets;
+    }
+
+    /// Capture the full derived state at the current tip.
+    /// Cheap clone of in-memory maps; called only every CHECKPOINT_INTERVAL blocks.
+    pub fn snapshot(&self) -> CheckpointState {
+        CheckpointState {
+            balances: self.balances.clone(),
+            pot: self.pot,
+            chain_work: self.chain_work,
+            block_hash: self.get_latest_hash(),
+            current_difficulty: self.current_difficulty,
+            asert_anchor: self.asert_anchor,
+            tickets: self.pending_tickets.clone(),
+        }
+    }
+
+    /// Replace the in-memory derived state with a previously snapshotted checkpoint.
+    ///
+    /// `checkpoint_block` is the block at `height` — it is placed as the sole
+    /// entry in `self.blocks` so that `get_latest_hash()` is correct for the
+    /// first block applied after the restore.
+    ///
+    /// Call `seed_pot` **before** this method (to set `genesis_pot`); this
+    /// method overwrites `pot` with the checkpoint value.
+    pub fn restore_from_checkpoint(
+        &mut self,
+        height: u64,
+        state: CheckpointState,
+        checkpoint_block: Block,
+    ) {
+        self.blocks.clear();
+        self.blocks_offset = height;
+        self.blocks.push(checkpoint_block);
+
+        self.block_hashes.clear();
+        self.confirmed_signatures.clear();
+        self.orphan_pool.clear();
+        self.settled_payouts_by_block.clear();
+
+        self.balances = state.balances;
+        self.pot = state.pot;
+        self.chain_work = state.chain_work;
+        self.current_difficulty = state.current_difficulty;
+        self.asert_anchor = state.asert_anchor;
+        self.pending_tickets = state.tickets;
     }
 
     /// Seed the pot directly. Only called once at genesis to bootstrap the
@@ -908,6 +974,22 @@ impl Blockchain {
                 if let Err(e) = db.save_applied_block(&block, &self.pending_tickets, &payouts) {
                     eprintln!("Failed to persist applied block {}: {}", block.index, e);
                 }
+                // Snapshot derived state every CHECKPOINT_INTERVAL blocks so future
+                // restarts can skip the O(N) full-chain replay.
+                if block.index > 0 && block.index % CHECKPOINT_INTERVAL == 0 {
+                    match bincode::serialize(&self.snapshot()) {
+                        Ok(data) => {
+                            if let Err(e) = db.save_checkpoint(block.index, &data) {
+                                eprintln!("Failed to save checkpoint at block {}: {}", block.index, e);
+                            } else {
+                                info!("Checkpoint saved at block {}", block.index);
+                            }
+                        }
+                        Err(e) => {
+                            eprintln!("Failed to serialize checkpoint at block {}: {}", block.index, e);
+                        }
+                    }
+                }
                 self.prune_to_window();
             }
             BlockOutcome::Reorged {
@@ -920,6 +1002,11 @@ impl Blockchain {
                 let new_blocks = new_blocks.clone();
                 if !old_blocks.is_empty() {
                     // Shallow reorg: common ancestor is within the memory window.
+                    // Invalidate any checkpoints at or after the fork point — they are
+                    // from the displaced chain and would be wrong on next restart.
+                    if let Err(e) = db.delete_checkpoints_from(old_blocks[0].index) {
+                        eprintln!("Failed to invalidate stale checkpoints after reorg: {}", e);
+                    }
                     // Only need payouts for the new fork blocks.
                     let mut new_payouts: HashMap<u64, Vec<(String, u64, String)>> = HashMap::new();
                     for b in &new_blocks {
@@ -938,10 +1025,12 @@ impl Blockchain {
                     }
                 } else {
                     // Deep reorg (ancestor before memory window): reorg_to replayed
-                    // the entire chain, so settled_payouts_by_block contains payouts
-                    // for ALL canonical blocks — pre-fork and new fork alike.
-                    // Take them all so rebuild_indices_with_tickets can restore every
-                    // lottery TX_INDEX entry correctly.
+                    // the entire chain from genesis, so ALL checkpoints are stale.
+                    if let Err(e) = db.delete_checkpoints_from(0) {
+                        eprintln!("Failed to invalidate stale checkpoints after deep reorg: {}", e);
+                    }
+                    // settled_payouts_by_block now contains payouts for ALL canonical
+                    // blocks — pre-fork and new fork alike.
                     let all_payouts = self.take_all_settled_payouts();
                     for b in &new_blocks {
                         if let Err(e) = db.save_block_indexed(b) {

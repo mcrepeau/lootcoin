@@ -14,7 +14,7 @@ use std::{
 };
 use tokio::sync::Mutex;
 use tower_http::cors::CorsLayer;
-use tracing::info;
+use tracing::{info, warn};
 
 // ── State ─────────────────────────────────────────────────────────────────────
 
@@ -83,6 +83,7 @@ async fn handle_dispense(
 ) -> Result<Json<DispenseResponse>, (StatusCode, Json<ErrorResponse>)> {
     // 1. Validate address format.
     if !is_valid_address(&req.address) {
+        warn!("Dispense rejected: invalid address '{}'", req.address);
         return Err(err(
             StatusCode::BAD_REQUEST,
             "Invalid address: must be a lootcoin bech32m address (loot1…).",
@@ -96,6 +97,10 @@ async fn handle_dispense(
             let elapsed = last.elapsed();
             if elapsed < state.cooldown {
                 let remaining_mins = (state.cooldown - elapsed).as_secs() / 60 + 1;
+                warn!(
+                    "Dispense rejected: cooldown active for {} ({} min remaining)",
+                    req.address, remaining_mins
+                );
                 return Err(err(
                     StatusCode::TOO_MANY_REQUESTS,
                     format!(
@@ -114,17 +119,23 @@ async fn handle_dispense(
         .get(format!("{}/balance/{}", state.node_url, faucet_addr))
         .send()
         .await
-        .map_err(|_| err(StatusCode::SERVICE_UNAVAILABLE, "Could not reach node."))?
+        .map_err(|e| {
+            warn!("Could not reach node to check balance: {}", e);
+            err(StatusCode::SERVICE_UNAVAILABLE, "Could not reach node.")
+        })?
         .json()
         .await
-        .map_err(|_| {
-            err(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "Unexpected response from node.",
-            )
+        .map_err(|e| {
+            warn!("Unexpected balance response from node: {}", e);
+            err(StatusCode::INTERNAL_SERVER_ERROR, "Unexpected response from node.")
         })?;
 
     if balance.spendable_balance < state.dispense_amount + state.fee {
+        warn!(
+            "Dispense rejected: insufficient balance (have {}, need {})",
+            balance.spendable_balance,
+            state.dispense_amount + state.fee
+        );
         return Err(err(StatusCode::SERVICE_UNAVAILABLE, "Faucet is empty."));
     }
 
@@ -142,10 +153,17 @@ async fn handle_dispense(
         .json(&tx)
         .send()
         .await
-        .map_err(|_| err(StatusCode::SERVICE_UNAVAILABLE, "Could not reach node."))?;
+        .map_err(|e| {
+            warn!("Could not reach node to submit transaction: {}", e);
+            err(StatusCode::SERVICE_UNAVAILABLE, "Could not reach node.")
+        })?;
 
     if !resp.status().is_success() {
         let body = resp.text().await.unwrap_or_default();
+        warn!(
+            "Node rejected transaction for {}: {}",
+            req.address, body
+        );
         return Err(err(
             StatusCode::INTERNAL_SERVER_ERROR,
             format!("Node rejected transaction: {}", body),
@@ -232,7 +250,7 @@ async fn main() {
         .expect("DISPENSE_AMOUNT must be a positive integer");
 
     let fee: u64 = std::env::var("DISPENSE_FEE")
-        .unwrap_or_else(|_| "1".to_string())
+        .unwrap_or_else(|_| "2".to_string())
         .parse()
         .expect("DISPENSE_FEE must be a positive integer");
 

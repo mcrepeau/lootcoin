@@ -261,10 +261,20 @@ async fn main() {
     // 1. Open the database
     let db = db::Db::new().expect("Failed to init DB");
 
-    // 2. Load the canonical chain from the BLOCKS table and replay it
+    // 2. Load the canonical chain from the BLOCKS table and replay it.
+    //    If a checkpoint exists, only the tail (blocks after the checkpoint) is
+    //    replayed in memory — the rest is loaded directly from the snapshot.
     let stored_blocks = db
         .load_canonical_chain()
         .expect("Failed to load chain from DB");
+
+    let maybe_checkpoint = db
+        .load_latest_checkpoint()
+        .expect("Failed to read checkpoints");
+
+    // true  → came from a checkpoint; TX index is already up to date in DB.
+    // false → did a full in-memory replay; TX index must be rebuilt from scratch.
+    let used_checkpoint: bool;
 
     let mut chain = if stored_blocks.is_empty() {
         // Fresh start — create the deterministic genesis block.
@@ -299,8 +309,70 @@ async fn main() {
             .expect("Failed to persist genesis");
         let mut chain = Blockchain::new(genesis);
         chain.seed_pot(GENESIS_POT_AMOUNT);
+        used_checkpoint = false;
         chain
+    } else if let Some((cp_height, cp_data)) = maybe_checkpoint {
+        // Checkpoint found — deserialize and validate it against the BLOCKS table.
+        let state: blockchain::CheckpointState = bincode::deserialize(&cp_data)
+            .expect("Failed to deserialize checkpoint");
+
+        let cp_block = db
+            .get_blocks_range(cp_height, 1)
+            .expect("Failed to load checkpoint block")
+            .into_iter()
+            .next()
+            .expect("Checkpoint block missing from BLOCKS table");
+
+        if cp_block.hash == state.block_hash {
+            info!(
+                "Found checkpoint at block {}; replaying only the tail...",
+                cp_height
+            );
+            // seed_pot sets genesis_pot (needed if a later reorg forces a full replay)
+            // and also sets pot — restore_from_checkpoint will overwrite pot with the
+            // checkpoint value.
+            let genesis = stored_blocks.into_iter().next().unwrap();
+            let mut chain = Blockchain::new(genesis);
+            chain.seed_pot(GENESIS_POT_AMOUNT);
+            chain.restore_from_checkpoint(cp_height, state, cp_block);
+
+            let tail_blocks = db
+                .load_blocks_from(cp_height + 1)
+                .expect("Failed to load post-checkpoint blocks");
+            let tail_len = tail_blocks.len();
+            for block in tail_blocks {
+                chain.apply_in_memory(block, None);
+            }
+            info!(
+                "Blockchain state rebuilt from checkpoint + {} block(s). Height: {}",
+                tail_len,
+                chain.get_height()
+            );
+            used_checkpoint = true;
+            chain
+        } else {
+            // Hash mismatch: this checkpoint is from a reorged (displaced) chain.
+            // Fall back to a full replay so we derive correct state from the DB.
+            warn!(
+                "Checkpoint at block {} is stale (hash mismatch) — falling back to full replay",
+                cp_height
+            );
+            if let Err(e) = db.delete_checkpoints_from(0) {
+                warn!("Failed to purge stale checkpoints: {}", e);
+            }
+            let mut iter = stored_blocks.into_iter();
+            let genesis = iter.next().unwrap();
+            let mut chain = Blockchain::new(genesis);
+            chain.seed_pot(GENESIS_POT_AMOUNT);
+            for block in iter {
+                chain.apply_in_memory(block, None);
+            }
+            info!("Blockchain state rebuilt. Height: {}", chain.get_height());
+            used_checkpoint = false;
+            chain
+        }
     } else {
+        // No checkpoint yet — full replay from genesis.
         info!("Replaying {} block(s) from storage...", stored_blocks.len());
         let mut iter = stored_blocks.into_iter();
         let genesis = iter.next().unwrap();
@@ -312,14 +384,19 @@ async fn main() {
             chain.apply_in_memory(block, None);
         }
         info!("Blockchain state rebuilt. Height: {}", chain.get_height());
+        used_checkpoint = false;
         chain
     };
 
     // 3. Rebuild the TX index from the full in-memory chain (before pruning),
     //    including any lottery payouts accumulated during replay.
+    //    Skipped when we started from a checkpoint — the TX index was maintained
+    //    by save_applied_block and is already consistent with the BLOCKS table.
     let all_payouts = chain.take_all_settled_payouts();
-    db.rebuild_tx_index(&chain.blocks, &all_payouts)
-        .expect("Failed to build tx index");
+    if !used_checkpoint {
+        db.rebuild_tx_index(&chain.blocks, &all_payouts)
+            .expect("Failed to build tx index");
+    }
 
     // 4. Prune in-memory blocks to the sliding window — historical blocks are
     //    now served exclusively from the BLOCKS table in redb.

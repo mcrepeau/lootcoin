@@ -10,7 +10,7 @@ pub(crate) use lootcoin_core::lottery::{
 /// Matures after TICKET_MATURITY blocks, then settled using REVEAL_BLOCKS
 /// of accumulated entropy. Payout is a flat fraction of the pot (`pot / DIVISOR`);
 /// per-transaction incentives come from the 50/50 fee split instead.
-#[derive(Clone)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct LootTicket {
     pub miner: String,
     pub created_height: u64,
