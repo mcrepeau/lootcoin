@@ -118,6 +118,24 @@ On first boot the node creates `./data/` and initialises the database. Subsequen
 
 ## API
 
+### `GET /node/info`
+
+Node-specific metadata. Unlike `/chain/head`, this response varies per node.
+
+```json
+{
+  "version": "1.3.3",
+  "history_start": 0,
+  "node_url": "http://mynode.example.com:3000"
+}
+```
+
+| Field | Description |
+|---|---|
+| `version` | Binary version compiled into the node |
+| `history_start` | Lowest block height available on this node. `0` means the node has the full chain from genesis (archive node). A non-zero value indicates the node synced from a checkpoint and cannot serve blocks before that height |
+| `node_url` | This node's public URL as set by `NODE_URL`, or `null` if not configured |
+
 ### `GET /chain/head`
 
 Current chain state.
