@@ -66,16 +66,16 @@
     </div>
     <div class="card-body">
       <div class="row">
-        <label>Receiver Address</label>
+        <label for="receiver">Receiver Address</label>
         <input id="receiver" placeholder="loot1…" />
       </div>
       <div class="flex-row mt-sm">
         <div class="flex-1">
-          <label>Amount</label>
+          <label for="amount">Amount</label>
           <input id="amount" type="number" value="1000" class="mt-sm" />
         </div>
         <div class="flex-1">
-          <label>Fee</label>
+          <label for="fee">Fee</label>
           <input id="fee" type="number" value="10" min="0" class="mt-sm" />
         </div>
       </div>
@@ -142,7 +142,7 @@
 <div id="openWalletOverlay" class="modal-overlay" style="display:none">
   <div class="modal-box">
     <h3>Open Wallet</h3>
-    <label class="modal-label">Recovery phrase (12 words)</label>
+    <label class="modal-label" for="openWalletPhrase">Recovery phrase (12 words)</label>
     <textarea id="openWalletPhrase" class="mnemonic-input" rows="3"
       placeholder="word1 word2 word3 … word12"
       autocomplete="off" autocorrect="off" autocapitalize="none" spellcheck="false"></textarea>
@@ -150,7 +150,7 @@
       <button type="button" id="toggleHexInput" class="btn-link">Use secret key instead (advanced)</button>
     </div>
     <div id="hexInputArea" style="display:none" class="mt-sm">
-      <label class="modal-label">Secret key (hex)</label>
+      <label class="modal-label" for="openWalletInput">Secret key (hex)</label>
       <input id="openWalletInput" placeholder="64-character hex secret key" autocomplete="off" spellcheck="false" />
     </div>
     <p id="openWalletError" class="fee-hint fee-hint-error mt-sm" style="min-height:1.1em"></p>
