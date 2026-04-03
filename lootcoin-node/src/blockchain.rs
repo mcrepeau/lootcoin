@@ -2359,4 +2359,301 @@ mod tests {
             BlockOutcome::Orphaned
         ));
     }
+
+    // ── Reorg via orphan pool ─────────────────────────────────────────────────
+
+    #[test]
+    fn apply_in_memory_triggers_reorg_via_orphan_pool() {
+        // Exercises the full path: fork blocks arrive out of order → orphan pool
+        // → fork accumulates more chain work than main → reorg fires automatically.
+        //
+        // With difficulty=0, all hashes pass PoW and ASERT is disabled
+        // (anchor_diff=0 < MIN_DIFFICULTY). Work is computed from actual leading
+        // zero bits of each CubeHash-256 output. All inputs are fixed so block
+        // hashes — and therefore work values — are deterministic. Using 10 fork
+        // blocks vs 2 main chain blocks makes it practically certain the fork wins.
+        let mut chain = make_chain();
+
+        // Apply 2 main-chain blocks.
+        chain.apply_in_memory(
+            next_block(&chain, vec![coinbase_tx("main_a")], GENESIS_TS + 1),
+            None,
+        );
+        chain.apply_in_memory(
+            next_block(&chain, vec![coinbase_tx("main_b")], GENESIS_TS + 2),
+            None,
+        );
+        assert_eq!(chain.get_height(), 3);
+
+        // Build a 10-block competing fork starting from genesis.
+        let genesis_hash = chain.blocks[0].hash.clone();
+        let fork = build_chain(
+            &[
+                ("fork_1",  GENESIS_TS + 3),
+                ("fork_2",  GENESIS_TS + 4),
+                ("fork_3",  GENESIS_TS + 5),
+                ("fork_4",  GENESIS_TS + 6),
+                ("fork_5",  GENESIS_TS + 7),
+                ("fork_6",  GENESIS_TS + 8),
+                ("fork_7",  GENESIS_TS + 9),
+                ("fork_8",  GENESIS_TS + 10),
+                ("fork_9",  GENESIS_TS + 11),
+                ("fork_10", GENESIS_TS + 12),
+            ],
+            genesis_hash,
+            1,
+        );
+
+        // Feed fork blocks into apply_in_memory one at a time. They enter the
+        // orphan pool initially; once the fork outweighs the main chain a reorg
+        // fires. Subsequent fork blocks are then Applied onto the new tip.
+        let mut saw_reorg = false;
+        for b in fork {
+            if let BlockOutcome::Reorged { .. } = chain.apply_in_memory(b, None) {
+                saw_reorg = true;
+            }
+        }
+
+        assert!(saw_reorg, "applying 10 fork blocks must trigger a reorg");
+
+        // After the reorg the fork miners have their rewards; main miners do not.
+        assert_eq!(chain.get_balance("main_a"), 0, "displaced miner must lose reward");
+        assert_eq!(chain.get_balance("main_b"), 0, "displaced miner must lose reward");
+        for i in 1..=10 {
+            assert_eq!(
+                chain.get_balance(&format!("fork_{}", i)),
+                1,
+                "fork_{} must have coinbase reward",
+                i
+            );
+        }
+        // Genesis allocation is always preserved.
+        assert_eq!(chain.get_balance("genesis_miner"), 1000);
+    }
+
+    // ── Double-spend prevention ───────────────────────────────────────────────
+
+    #[test]
+    fn double_spend_same_sig_across_consecutive_blocks_rejected() {
+        // A transaction confirmed in block N must be rejected in block N+1
+        // when the same signature is reused, even with a valid Ed25519 sig.
+        let alice = Wallet::new();
+        let bob = Wallet::new();
+        let mut chain = make_chain();
+        chain.balances.insert(alice.get_address(), 1_000);
+
+        // Block 1: Alice sends to Bob (properly signed).
+        let tx = Transaction::new_signed(&alice, bob.get_address(), 100, 10);
+        let b1 = next_block(&chain, vec![coinbase_tx("miner"), tx.clone()], GENESIS_TS + 1);
+        assert!(matches!(chain.apply_in_memory(b1, None), BlockOutcome::Applied));
+        assert_eq!(chain.get_balance(&alice.get_address()), 890); // 1000 - 100 - 10
+
+        // Block 2: same transaction (identical signature) submitted again.
+        let b2 = next_block(&chain, vec![coinbase_tx("miner"), tx], GENESIS_TS + 2);
+        assert!(
+            matches!(chain.apply_in_memory(b2, None), BlockOutcome::Rejected),
+            "block containing a previously confirmed signature must be rejected"
+        );
+        assert_eq!(chain.get_height(), 2); // rejected block must not advance height
+        assert_eq!(chain.get_balance(&alice.get_address()), 890); // balance unchanged
+    }
+
+    #[test]
+    fn double_spend_reorg_clears_confirmed_signatures() {
+        // When a reorg displaces a block its transactions become unconfirmed.
+        // The displaced tx's signature must be cleared so it can legitimately
+        // be re-included on the new canonical chain.
+        let alice = Wallet::new();
+        let bob = Wallet::new();
+        // Alice's genesis allocation survives any reorg (genesis is never displaced).
+        let mut chain = make_chain_funding(&alice.get_address(), 1_000);
+
+        // Block 1 (main chain): Alice sends to Bob.
+        let tx = Transaction::new_signed(&alice, bob.get_address(), 100, 10);
+        let b_main = next_block(
+            &chain,
+            vec![coinbase_tx("main_miner"), tx.clone()],
+            GENESIS_TS + 1,
+        );
+        chain.apply_in_memory(b_main, None);
+        assert!(
+            chain.confirmed_signatures.contains(&tx.signature),
+            "tx signature must be recorded after confirmation"
+        );
+
+        // Build a 5-block fork from genesis that does NOT include Alice's tx.
+        let genesis_hash = chain.blocks[0].hash.clone();
+        let fork = build_chain(
+            &[
+                ("fork_a", GENESIS_TS + 2),
+                ("fork_b", GENESIS_TS + 3),
+                ("fork_c", GENESIS_TS + 4),
+                ("fork_d", GENESIS_TS + 5),
+                ("fork_e", GENESIS_TS + 6),
+            ],
+            genesis_hash,
+            1,
+        );
+
+        let mut saw_reorg = false;
+        for b in fork {
+            if let BlockOutcome::Reorged { .. } = chain.apply_in_memory(b, None) {
+                saw_reorg = true;
+            }
+        }
+        assert!(saw_reorg, "5-block fork must displace 1-block main chain");
+
+        // Alice's signature must have been cleared by the reorg.
+        assert!(
+            !chain.confirmed_signatures.contains(&tx.signature),
+            "displaced tx signature must be cleared after reorg"
+        );
+
+        // Alice still has her genesis allocation on the fork chain (tx not included).
+        assert_eq!(chain.get_balance(&alice.get_address()), 1_000);
+
+        // Alice's tx can now legitimately be applied in a new block on the fork chain.
+        let b_new = next_block(
+            &chain,
+            vec![coinbase_tx("fork_miner"), tx],
+            GENESIS_TS + 7,
+        );
+        assert!(
+            matches!(chain.apply_in_memory(b_new, None), BlockOutcome::Applied),
+            "tx displaced by a reorg must be re-includable on the new canonical chain"
+        );
+        assert_eq!(chain.get_balance(&alice.get_address()), 890); // 1000 - 100 - 10
+        assert_eq!(chain.get_balance(&bob.get_address()), 100);
+    }
+
+    // ── Supply conservation ───────────────────────────────────────────────────
+
+    #[test]
+    fn total_supply_conserved_across_fees_and_coinbase() {
+        // Invariant: sum(all balances) + pot == genesis_allocation + pot_seed + coinbase_rewards
+        //
+        // Fees redistribute value within the system (sender → pot → 50/50 split).
+        // Coinbase is the only source of new supply (1 coin per block).
+        // Neither operation may create or destroy value beyond coinbase issuance.
+        let alice = Wallet::new();
+        let bob = Wallet::new();
+        let mut chain = make_chain();
+        const POT_SEED: u64 = 100_000;
+        chain.seed_pot(POT_SEED);
+        // Directly seed Alice's balance (genesis balance injection for test setup).
+        let alice_genesis: u64 = 5_000;
+        chain.balances.insert(alice.get_address(), alice_genesis);
+
+        let total_supply = |c: &Blockchain| -> u64 { c.balances.values().sum::<u64>() + c.pot };
+
+        // Base = genesis_miner allocation + alice injection + pot seed.
+        const GENESIS_ALLOC: u64 = 1_000; // from make_genesis
+        let base = GENESIS_ALLOC + alice_genesis + POT_SEED;
+        let mut coinbase_rewards: u64 = 0;
+
+        assert_eq!(total_supply(&chain), base, "initial supply must equal base");
+
+        // Block 1: coinbase only — adds 1 coin of new supply.
+        chain.apply_in_memory(next_block(&chain, vec![coinbase_tx("m1")], GENESIS_TS + 1), None);
+        coinbase_rewards += 1;
+        assert_eq!(total_supply(&chain), base + coinbase_rewards, "block 1");
+
+        // Block 2: Alice sends to Bob with a fee — only coinbase adds new supply.
+        let tx1 = Transaction::new_signed(&alice, bob.get_address(), 200, 4);
+        chain.apply_in_memory(
+            next_block(&chain, vec![coinbase_tx("m2"), tx1], GENESIS_TS + 2),
+            None,
+        );
+        coinbase_rewards += 1;
+        assert_eq!(
+            total_supply(&chain),
+            base + coinbase_rewards,
+            "fees must not create or destroy value"
+        );
+
+        // Block 3: Bob sends back with an odd fee (remainder stays in pot).
+        let tx2 = Transaction::new_signed(&bob, alice.get_address(), 50, 5);
+        chain.apply_in_memory(
+            next_block(&chain, vec![coinbase_tx("m3"), tx2], GENESIS_TS + 3),
+            None,
+        );
+        coinbase_rewards += 1;
+        assert_eq!(total_supply(&chain), base + coinbase_rewards, "block 3");
+    }
+
+    // ── Checkpoint roundtrip ──────────────────────────────────────────────────
+
+    #[test]
+    fn checkpoint_roundtrip_preserves_all_state() {
+        // snapshot() + restore_from_checkpoint() must produce a Blockchain that
+        // is state-equivalent to the original, and subsequent block application
+        // must yield identical results on both.
+        let alice = Wallet::new();
+        let bob = Wallet::new();
+        let mut original = make_chain_funding(&alice.get_address(), 5_000);
+        original.seed_pot(100_000);
+
+        // Apply two blocks with real transactions to build non-trivial state.
+        let tx1 = Transaction::new_signed(&alice, bob.get_address(), 100, 4);
+        original.apply_in_memory(
+            next_block(&original, vec![coinbase_tx("miner"), tx1], GENESIS_TS + 1),
+            None,
+        );
+        let tx2 = Transaction::new_signed(&alice, bob.get_address(), 50, 4);
+        original.apply_in_memory(
+            next_block(&original, vec![coinbase_tx("miner"), tx2], GENESIS_TS + 2),
+            None,
+        );
+        assert_eq!(original.get_height(), 3);
+
+        // Capture checkpoint at the current tip.
+        let cp_state = original.snapshot();
+        let cp_block = original.blocks.last().unwrap().clone();
+        let cp_height = cp_block.index; // absolute index of the checkpoint block
+
+        // Restore into a fresh Blockchain.
+        let genesis = make_genesis();
+        let mut restored = Blockchain::new(genesis);
+        restored.current_difficulty = 0.0;
+        restored.initial_difficulty = 0.0;
+        restored.seed_pot(100_000); // must match original's genesis_pot
+        restored.restore_from_checkpoint(cp_height, cp_state, cp_block);
+
+        // All state fields must match.
+        assert_eq!(
+            restored.get_balance(&alice.get_address()),
+            original.get_balance(&alice.get_address()),
+            "alice balance"
+        );
+        assert_eq!(
+            restored.get_balance(&bob.get_address()),
+            original.get_balance(&bob.get_address()),
+            "bob balance"
+        );
+        assert_eq!(restored.get_pot(), original.get_pot(), "pot");
+        assert_eq!(restored.get_chain_work(), original.get_chain_work(), "chain_work");
+        assert_eq!(restored.get_latest_hash(), original.get_latest_hash(), "latest_hash");
+        assert_eq!(restored.get_difficulty(), original.get_difficulty(), "difficulty");
+        assert_eq!(restored.get_height(), original.get_height(), "height");
+
+        // Applying the same next block on both must produce identical state.
+        let tx3 = Transaction::new_signed(&alice, bob.get_address(), 25, 4);
+        let next = next_block(&original, vec![coinbase_tx("miner"), tx3], GENESIS_TS + 3);
+
+        assert!(matches!(original.apply_in_memory(next.clone(), None), BlockOutcome::Applied));
+        assert!(matches!(restored.apply_in_memory(next, None), BlockOutcome::Applied));
+
+        assert_eq!(
+            original.get_balance(&alice.get_address()),
+            restored.get_balance(&alice.get_address()),
+            "alice balance diverges after post-checkpoint block"
+        );
+        assert_eq!(
+            original.get_balance(&bob.get_address()),
+            restored.get_balance(&bob.get_address()),
+            "bob balance diverges after post-checkpoint block"
+        );
+        assert_eq!(original.get_pot(), restored.get_pot(), "pot diverges");
+        assert_eq!(original.get_height(), restored.get_height(), "height diverges");
+    }
 }
