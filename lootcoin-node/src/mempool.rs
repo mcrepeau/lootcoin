@@ -28,13 +28,6 @@ pub struct Mempool {
 }
 
 impl Mempool {
-    pub fn new() -> Self {
-        Self {
-            entries: HashMap::new(),
-            db: None,
-        }
-    }
-
     pub fn new_with_db(db: Arc<crate::db::Db>) -> Self {
         Self {
             entries: HashMap::new(),

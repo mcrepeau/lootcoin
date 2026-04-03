@@ -709,17 +709,6 @@ impl Db {
         Ok(())
     }
 
-    /// Remove a pending transaction (confirmed or evicted).
-    pub fn remove_mempool_tx(&self, sig: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
-        let wtxn = self.db.begin_write()?;
-        {
-            let mut table = wtxn.open_table(MEMPOOL)?;
-            table.remove(sig)?;
-        }
-        wtxn.commit()?;
-        Ok(())
-    }
-
     /// Remove multiple pending transactions in a single write transaction.
     pub fn remove_mempool_txs(&self, sigs: &[Vec<u8>]) -> Result<(), Box<dyn std::error::Error>> {
         if sigs.is_empty() {
