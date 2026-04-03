@@ -354,8 +354,8 @@ impl Db {
 
                 // Remove lottery TX_INDEX entries for this displaced block.
                 if let Some(stored) = lp_table.get(&block.index)? {
-                    let old_payouts: Vec<(String, u64)> = bincode::deserialize(stored.value())?;
-                    for (i, (receiver, _)) in old_payouts.iter().enumerate() {
+                    let old_payouts: Vec<(String, u64, String)> = bincode::deserialize(stored.value())?;
+                    for (i, (receiver, _, _)) in old_payouts.iter().enumerate() {
                         let key = make_tx_key(receiver, block.index, 0xFFFF_0000 + i);
                         tx_table.remove(key.as_slice())?;
                     }

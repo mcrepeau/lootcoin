@@ -40,6 +40,9 @@ impl Mempool {
     /// write-through (the data is already in the DB).
     pub fn restore(&mut self, entries: Vec<(Transaction, u64)>) {
         for (tx, added_height) in entries {
+            if self.entries.len() >= MAX_MEMPOOL_SIZE {
+                break;
+            }
             let sig = tx.signature.clone();
             self.entries
                 .entry(sig)

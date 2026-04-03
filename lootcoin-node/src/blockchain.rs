@@ -857,8 +857,16 @@ impl Blockchain {
         }
 
         for block in new_canonical.into_iter().skip(1) {
-            // Reorg rebuilds from a mix of trusted main-chain blocks and
-            self.update_state(&block);
+            if !self.update_state(&block) {
+                // Should never happen: all blocks have passed validate_block_standalone
+                // before entering the orphan pool or the DB. Abort rather than
+                // leaving the chain in a half-rebuilt state.
+                eprintln!(
+                    "reorg: update_state rejected block {} — aborting reorg",
+                    block.index
+                );
+                return;
+            }
         }
     }
 
