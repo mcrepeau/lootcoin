@@ -229,21 +229,20 @@ async fn main() -> anyhow::Result<()> {
     // Initialise the GPU miner when the binary was compiled with --features gpu
     // and the environment variable USE_GPU=1 is set.
     #[cfg(feature = "gpu")]
-    let gpu_miner: Option<Arc<gpu::GpuMiner>> =
-        if std::env::var("USE_GPU").as_deref() == Ok("1") {
-            match gpu::GpuMiner::new() {
-                Ok(m) => {
-                    info!("GPU miner ready on device 0");
-                    Some(Arc::new(m))
-                }
-                Err(e) => {
-                    warn!("GPU miner init failed: {e} — falling back to CPU");
-                    None
-                }
+    let gpu_miner: Option<Arc<gpu::GpuMiner>> = if std::env::var("USE_GPU").as_deref() == Ok("1") {
+        match gpu::GpuMiner::new() {
+            Ok(m) => {
+                info!("GPU miner ready on device 0");
+                Some(Arc::new(m))
             }
-        } else {
-            None
-        };
+            Err(e) => {
+                warn!("GPU miner init failed: {e} — falling back to CPU");
+                None
+            }
+        }
+    } else {
+        None
+    };
 
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(10))

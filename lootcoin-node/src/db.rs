@@ -748,7 +748,11 @@ impl Db {
 
     /// Persist a serialized CheckpointState at the given block height.
     /// Overwrites any existing entry at that height.
-    pub fn save_checkpoint(&self, height: u64, data: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
+    pub fn save_checkpoint(
+        &self,
+        height: u64,
+        data: &[u8],
+    ) -> Result<(), Box<dyn std::error::Error>> {
         let wtxn = self.db.begin_write()?;
         {
             let mut table = wtxn.open_table(CHECKPOINTS)?;

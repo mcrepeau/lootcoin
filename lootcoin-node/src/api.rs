@@ -21,12 +21,12 @@ use tower_http::{
 use tracing::{info, warn};
 
 use crate::blockchain::{BlockOutcome, Blockchain, CheckpointState};
-use lootcoin_core::block::MAX_BLOCK_TXS;
 use crate::db::Db;
 use crate::gossip::{Gossip, NodeEvent};
 use crate::loot_ticket::LootTicket;
 use crate::mempool::{FeeStats, Mempool};
 use crate::metrics::Metrics;
+use lootcoin_core::block::MAX_BLOCK_TXS;
 use lootcoin_core::{
     block::{meets_difficulty, Block},
     transaction::Transaction,
@@ -979,9 +979,9 @@ async fn metrics_handler(State(state): State<AppState>) -> impl axum::response::
     {
         let chain = state.chain.read().await;
         let height = chain.get_height();
-        let pot    = chain.get_pot();
+        let pot = chain.get_pot();
         // Genesis supply is 100 M (1 M circulating + 99 M pot); coinbase adds 1/block.
-        let total  = 100_000_000u64.saturating_add(height);
+        let total = 100_000_000u64.saturating_add(height);
 
         m.chain_height.set(height as f64);
         m.chain_difficulty.set(chain.get_difficulty());
@@ -993,7 +993,8 @@ async fn metrics_handler(State(state): State<AppState>) -> impl axum::response::
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs();
-        m.secs_since_last_block.set(now_secs.saturating_sub(chain.get_last_block_timestamp()) as f64);
+        m.secs_since_last_block
+            .set(now_secs.saturating_sub(chain.get_last_block_timestamp()) as f64);
 
         m.pot_coins.set(pot as f64);
         m.total_supply.set(total as f64);
@@ -1001,10 +1002,14 @@ async fn metrics_handler(State(state): State<AppState>) -> impl axum::response::
     }
 
     m.mempool_size.set(state.mempool.read().await.len() as f64);
-    m.peer_count.set(state.gossip.peer_urls().await.len() as f64);
+    m.peer_count
+        .set(state.gossip.peer_urls().await.len() as f64);
 
     (
-        [(axum::http::header::CONTENT_TYPE, "text/plain; version=0.0.4; charset=utf-8")],
+        [(
+            axum::http::header::CONTENT_TYPE,
+            "text/plain; version=0.0.4; charset=utf-8",
+        )],
         m.encode_to_string(),
     )
 }
@@ -1023,7 +1028,10 @@ pub async fn get_snapshots_handler(State(state): State<AppState>) -> Json<Vec<Sn
             if let Ok(cp) = bincode::deserialize::<CheckpointState>(&data) {
                 let local_hash = hex::encode(&cp.block_hash);
                 if local_hash == trusted_hash.trim_start_matches("0x") {
-                    available.push(SnapshotInfo { height, block_hash_hex: local_hash });
+                    available.push(SnapshotInfo {
+                        height,
+                        block_hash_hex: local_hash,
+                    });
                 }
             }
         }
@@ -1092,7 +1100,9 @@ pub async fn block_hash_handler(
         .get_blocks_range(height, 1)
         .map_err(|_| axum::http::StatusCode::INTERNAL_SERVER_ERROR)?;
     match blocks.into_iter().next() {
-        Some(b) => Ok(Json(serde_json::json!({ "height": height, "block_hash_hex": hex::encode(&b.hash) }))),
+        Some(b) => Ok(Json(
+            serde_json::json!({ "height": height, "block_hash_hex": hex::encode(&b.hash) }),
+        )),
         None => Err(axum::http::StatusCode::NOT_FOUND),
     }
 }

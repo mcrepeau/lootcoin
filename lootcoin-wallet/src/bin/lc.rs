@@ -88,8 +88,7 @@ fn load_wallet_file(path: &PathBuf) -> Result<WalletFile, String> {
 
 fn save_wallet_file(path: &PathBuf, wf: &WalletFile) -> Result<(), String> {
     if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)
-            .map_err(|e| format!("Cannot create wallet directory: {}", e))?;
+        fs::create_dir_all(parent).map_err(|e| format!("Cannot create wallet directory: {}", e))?;
     }
     fs::write(path, serde_json::to_string_pretty(wf).unwrap())
         .map_err(|e| format!("Cannot write wallet file: {}", e))
@@ -169,9 +168,11 @@ fn run(cmd: Commands, node: &str, wallet_path: &PathBuf) -> Result<(), String> {
         Commands::Import { phrase } => cmd_import(wallet_path, phrase),
         Commands::Address => cmd_address(wallet_path),
         Commands::Balance { address } => cmd_balance(&client, node, wallet_path, address),
-        Commands::Send { receiver, amount, fee } => {
-            cmd_send(&client, node, wallet_path, receiver, amount, fee)
-        }
+        Commands::Send {
+            receiver,
+            amount,
+            fee,
+        } => cmd_send(&client, node, wallet_path, receiver, amount, fee),
         Commands::History { address, limit } => {
             cmd_history(&client, node, wallet_path, address, limit)
         }
@@ -184,8 +185,7 @@ fn run(cmd: Commands, node: &str, wallet_path: &PathBuf) -> Result<(), String> {
 fn cmd_new(wallet_path: &PathBuf) -> Result<(), String> {
     let mut entropy = [0u8; 16]; // 128 bits → 12 words
     OsRng.fill_bytes(&mut entropy);
-    let mnemonic =
-        Mnemonic::from_entropy(&entropy).map_err(|e| format!("BIP-39 error: {}", e))?;
+    let mnemonic = Mnemonic::from_entropy(&entropy).map_err(|e| format!("BIP-39 error: {}", e))?;
     let wallet = Wallet::from_secret_key_bytes(key_from_mnemonic(&mnemonic));
 
     save_wallet_file(
@@ -291,7 +291,10 @@ fn cmd_send(
     // How many blocks before this tx becomes eligible for inclusion.
     let wait = (120u64 / fee).saturating_sub(1);
     if wait > 0 {
-        println!("Wait:   ~{} blocks (~{} min) before miners can include this tx", wait, wait);
+        println!(
+            "Wait:   ~{} blocks (~{} min) before miners can include this tx",
+            wait, wait
+        );
     }
     println!();
 

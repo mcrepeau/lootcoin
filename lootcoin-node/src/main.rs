@@ -271,7 +271,10 @@ async fn fetch_peer_snapshot(
     candidates.sort_by_key(|(_, h, _)| std::cmp::Reverse(*h));
 
     for (peer, height, expected_hash) in candidates {
-        info!("Attempting snapshot sync from {} at height {}", peer, height);
+        info!(
+            "Attempting snapshot sync from {} at height {}",
+            peer, height
+        );
 
         // Download the snapshot payload.
         let payload: SnapshotPayload = match client
@@ -282,12 +285,18 @@ async fn fetch_peer_snapshot(
             Ok(resp) => match resp.json::<SnapshotPayload>().await {
                 Ok(p) => p,
                 Err(e) => {
-                    warn!("Failed to parse snapshot from {} at {}: {}", peer, height, e);
+                    warn!(
+                        "Failed to parse snapshot from {} at {}: {}",
+                        peer, height, e
+                    );
                     continue;
                 }
             },
             Err(e) => {
-                warn!("Failed to download snapshot from {} at {}: {}", peer, height, e);
+                warn!(
+                    "Failed to download snapshot from {} at {}: {}",
+                    peer, height, e
+                );
                 continue;
             }
         };
@@ -333,11 +342,8 @@ async fn fetch_peer_snapshot(
         }
 
         // Parse chain_work from hex string.
-        let chain_work = u128::from_str_radix(
-            payload.chain_work_hex.trim_start_matches("0x"),
-            16,
-        )
-        .unwrap_or(0);
+        let chain_work =
+            u128::from_str_radix(payload.chain_work_hex.trim_start_matches("0x"), 16).unwrap_or(0);
 
         let state = blockchain::CheckpointState {
             balances: payload.balances,
@@ -367,10 +373,7 @@ async fn fetch_peer_snapshot(
             }
         }
 
-        info!(
-            "Snapshot sync complete: height={} from {}",
-            height, peer
-        );
+        info!("Snapshot sync complete: height={} from {}", height, peer);
         return Some((height, state, cp_block));
     }
 
@@ -424,7 +427,11 @@ async fn main() {
     // Health-check subcommand: exit 0 if the ready file exists, 1 otherwise.
     // Invoked by the Docker HEALTHCHECK — no logging needed.
     if std::env::args().nth(1).as_deref() == Some("health") {
-        std::process::exit(if std::path::Path::new(HEALTHY_FILE).exists() { 0 } else { 1 });
+        std::process::exit(if std::path::Path::new(HEALTHY_FILE).exists() {
+            0
+        } else {
+            1
+        });
     }
 
     // Remove any stale ready file from a previous run so health checks don't
@@ -538,8 +545,8 @@ async fn main() {
         }
     } else if let Some((cp_height, cp_data)) = maybe_checkpoint {
         // Checkpoint found — deserialize and validate it against the BLOCKS table.
-        let state: blockchain::CheckpointState = bincode::deserialize(&cp_data)
-            .expect("Failed to deserialize checkpoint");
+        let state: blockchain::CheckpointState =
+            bincode::deserialize(&cp_data).expect("Failed to deserialize checkpoint");
 
         let cp_block = db
             .get_blocks_range(cp_height, 1)
@@ -696,7 +703,8 @@ async fn main() {
                 .into_iter()
                 .filter(|(tx, added_height)| {
                     let is_confirmed = db.is_confirmed_signature(&tx.signature).unwrap_or(false);
-                    let is_expired = current_height.saturating_sub(*added_height) > mempool::TX_EXPIRY_BLOCKS;
+                    let is_expired =
+                        current_height.saturating_sub(*added_height) > mempool::TX_EXPIRY_BLOCKS;
                     !is_confirmed && !is_expired
                 })
                 .collect();

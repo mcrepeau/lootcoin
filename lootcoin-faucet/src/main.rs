@@ -127,7 +127,10 @@ async fn handle_dispense(
         .await
         .map_err(|e| {
             warn!("Unexpected balance response from node: {}", e);
-            err(StatusCode::INTERNAL_SERVER_ERROR, "Unexpected response from node.")
+            err(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Unexpected response from node.",
+            )
         })?;
 
     if balance.spendable_balance < state.dispense_amount + state.fee {
@@ -160,10 +163,7 @@ async fn handle_dispense(
 
     if !resp.status().is_success() {
         let body = resp.text().await.unwrap_or_default();
-        warn!(
-            "Node rejected transaction for {}: {}",
-            req.address, body
-        );
+        warn!("Node rejected transaction for {}: {}", req.address, body);
         return Err(err(
             StatusCode::INTERNAL_SERVER_ERROR,
             format!("Node rejected transaction: {}", body),

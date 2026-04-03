@@ -1,16 +1,16 @@
 use crate::db::Db;
-use crate::metrics::Metrics;
-use serde::{Deserialize, Serialize};
 use crate::loot_ticket::{
     LootTicket, JACKPOT_BUCKET_START, JACKPOT_DIVISOR, LARGE_BUCKET_START, LARGE_DIVISOR,
     MEDIUM_BUCKET_START, MEDIUM_DIVISOR, MIN_TX_FEE, PPM, REVEAL_BLOCKS, SMALL_BUCKET_START,
     SMALL_DIVISOR, TICKET_MATURITY,
 };
+use crate::metrics::Metrics;
 use cubehash::CubeHash256;
 use lootcoin_core::{
     block::{meets_difficulty, Block, MAX_BLOCK_TXS},
     transaction::Transaction,
 };
+use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -35,7 +35,6 @@ const TARGET_BLOCK_TIME_SECS: u64 = 60;
 ///  • Network goes dark → difficulty drops by 1 bit per hour of silence.
 /// The adjustment is applied every block, so there is no fixed window to exploit.
 pub const ASERT_HALFLIFE_SECS: f64 = 3_600.0;
-
 
 /// A block's timestamp must exceed the median of the last N block timestamps
 /// (Median Time Past). Prevents backdating attacks and difficulty manipulation
@@ -394,11 +393,11 @@ impl Blockchain {
         let bucket = Self::loot_bucket_from_digest(&digest);
 
         match bucket {
-            0..SMALL_BUCKET_START                    => (0,                             "none"),
-            SMALL_BUCKET_START..MEDIUM_BUCKET_START  => (self.pot / SMALL_DIVISOR,   "small"),
-            MEDIUM_BUCKET_START..LARGE_BUCKET_START  => (self.pot / MEDIUM_DIVISOR,  "medium"),
-            LARGE_BUCKET_START..JACKPOT_BUCKET_START => (self.pot / LARGE_DIVISOR,   "large"),
-            _                                        => (self.pot / JACKPOT_DIVISOR, "jackpot"),
+            0..SMALL_BUCKET_START => (0, "none"),
+            SMALL_BUCKET_START..MEDIUM_BUCKET_START => (self.pot / SMALL_DIVISOR, "small"),
+            MEDIUM_BUCKET_START..LARGE_BUCKET_START => (self.pot / MEDIUM_DIVISOR, "medium"),
+            LARGE_BUCKET_START..JACKPOT_BUCKET_START => (self.pot / LARGE_DIVISOR, "large"),
+            _ => (self.pot / JACKPOT_DIVISOR, "jackpot"),
         }
     }
 
@@ -655,19 +654,18 @@ impl Blockchain {
                 // that set difficulty=0 to avoid real PoW). Skip ASERT so that
                 // fake-hash blocks continue to be accepted.
             } else {
-            let ideal = (block.index - anchor_height) * TARGET_BLOCK_TIME_SECS;
-            let actual = block.timestamp.saturating_sub(anchor_ts);
-            let adjustment =
-                (ideal as f64 - actual as f64) / ASERT_HALFLIFE_SECS;
-            let new_difficulty =
-                (anchor_diff + adjustment).clamp(MIN_DIFFICULTY, MAX_DIFFICULTY);
-            if (new_difficulty - self.current_difficulty).abs() > 1e-9 {
-                info!(
-                    "Difficulty adjusted: {:.3} → {:.3} bits at height {}",
-                    self.current_difficulty, new_difficulty, block.index
-                );
-                self.current_difficulty = new_difficulty;
-            }
+                let ideal = (block.index - anchor_height) * TARGET_BLOCK_TIME_SECS;
+                let actual = block.timestamp.saturating_sub(anchor_ts);
+                let adjustment = (ideal as f64 - actual as f64) / ASERT_HALFLIFE_SECS;
+                let new_difficulty =
+                    (anchor_diff + adjustment).clamp(MIN_DIFFICULTY, MAX_DIFFICULTY);
+                if (new_difficulty - self.current_difficulty).abs() > 1e-9 {
+                    info!(
+                        "Difficulty adjusted: {:.3} → {:.3} bits at height {}",
+                        self.current_difficulty, new_difficulty, block.index
+                    );
+                    self.current_difficulty = new_difficulty;
+                }
             } // end else (anchor_diff >= MIN_DIFFICULTY)
         }
 
@@ -980,13 +978,19 @@ impl Blockchain {
                     match bincode::serialize(&self.snapshot()) {
                         Ok(data) => {
                             if let Err(e) = db.save_checkpoint(block.index, &data) {
-                                eprintln!("Failed to save checkpoint at block {}: {}", block.index, e);
+                                eprintln!(
+                                    "Failed to save checkpoint at block {}: {}",
+                                    block.index, e
+                                );
                             } else {
                                 info!("Checkpoint saved at block {}", block.index);
                             }
                         }
                         Err(e) => {
-                            eprintln!("Failed to serialize checkpoint at block {}: {}", block.index, e);
+                            eprintln!(
+                                "Failed to serialize checkpoint at block {}: {}",
+                                block.index, e
+                            );
                         }
                     }
                 }
@@ -1027,7 +1031,10 @@ impl Blockchain {
                     // Deep reorg (ancestor before memory window): reorg_to replayed
                     // the entire chain from genesis, so ALL checkpoints are stale.
                     if let Err(e) = db.delete_checkpoints_from(0) {
-                        eprintln!("Failed to invalidate stale checkpoints after deep reorg: {}", e);
+                        eprintln!(
+                            "Failed to invalidate stale checkpoints after deep reorg: {}",
+                            e
+                        );
                     }
                     // settled_payouts_by_block now contains payouts for ALL canonical
                     // blocks — pre-fork and new fork alike.
@@ -1287,16 +1294,16 @@ mod tests {
         let chain = make_chain();
         // fee=0 and fee=1 are both below MIN_TX_FEE=2
         for bad_fee in [0u64, 1] {
-        let tx = Transaction {
-            sender: "genesis_miner".to_string(),
-            receiver: "alice".to_string(),
-            amount: 100,
-            fee: bad_fee,
-            nonce: 0,
-            public_key: [0u8; 32],
-            signature: vec![1],
-        };
-        assert!(!chain.validate_transaction_state(&tx));
+            let tx = Transaction {
+                sender: "genesis_miner".to_string(),
+                receiver: "alice".to_string(),
+                amount: 100,
+                fee: bad_fee,
+                nonce: 0,
+                public_key: [0u8; 32],
+                signature: vec![1],
+            };
+            assert!(!chain.validate_transaction_state(&tx));
         } // end for bad_fee
     }
 
@@ -1847,27 +1854,31 @@ mod tests {
     fn payout_divisors_match_bucket_ranges() {
         const POT: u64 = 1_000_000_000;
         let cases: &[(u32, u64, &str)] = &[
-            (0,                          0,                     "none"),
-            (SMALL_BUCKET_START - 1,     0,                     "none"),
-            (SMALL_BUCKET_START,         POT / SMALL_DIVISOR,   "small"),
-            (MEDIUM_BUCKET_START - 1,    POT / SMALL_DIVISOR,   "small"),
-            (MEDIUM_BUCKET_START,        POT / MEDIUM_DIVISOR,  "medium"),
-            (LARGE_BUCKET_START - 1,     POT / MEDIUM_DIVISOR,  "medium"),
-            (LARGE_BUCKET_START,         POT / LARGE_DIVISOR,   "large"),
-            (JACKPOT_BUCKET_START - 1,   POT / LARGE_DIVISOR,   "large"),
-            (JACKPOT_BUCKET_START,       POT / JACKPOT_DIVISOR, "jackpot"),
-            (PPM - 1,                    POT / JACKPOT_DIVISOR, "jackpot"),
+            (0, 0, "none"),
+            (SMALL_BUCKET_START - 1, 0, "none"),
+            (SMALL_BUCKET_START, POT / SMALL_DIVISOR, "small"),
+            (MEDIUM_BUCKET_START - 1, POT / SMALL_DIVISOR, "small"),
+            (MEDIUM_BUCKET_START, POT / MEDIUM_DIVISOR, "medium"),
+            (LARGE_BUCKET_START - 1, POT / MEDIUM_DIVISOR, "medium"),
+            (LARGE_BUCKET_START, POT / LARGE_DIVISOR, "large"),
+            (JACKPOT_BUCKET_START - 1, POT / LARGE_DIVISOR, "large"),
+            (JACKPOT_BUCKET_START, POT / JACKPOT_DIVISOR, "jackpot"),
+            (PPM - 1, POT / JACKPOT_DIVISOR, "jackpot"),
         ];
         for &(bucket, expected_amount, expected_tier) in cases {
             let (amount, tier) = match bucket {
-                0..SMALL_BUCKET_START                    => (0,                       "none"),
-                SMALL_BUCKET_START..MEDIUM_BUCKET_START  => (POT / SMALL_DIVISOR,   "small"),
-                MEDIUM_BUCKET_START..LARGE_BUCKET_START  => (POT / MEDIUM_DIVISOR,  "medium"),
-                LARGE_BUCKET_START..JACKPOT_BUCKET_START => (POT / LARGE_DIVISOR,   "large"),
-                _                                        => (POT / JACKPOT_DIVISOR, "jackpot"),
+                0..SMALL_BUCKET_START => (0, "none"),
+                SMALL_BUCKET_START..MEDIUM_BUCKET_START => (POT / SMALL_DIVISOR, "small"),
+                MEDIUM_BUCKET_START..LARGE_BUCKET_START => (POT / MEDIUM_DIVISOR, "medium"),
+                LARGE_BUCKET_START..JACKPOT_BUCKET_START => (POT / LARGE_DIVISOR, "large"),
+                _ => (POT / JACKPOT_DIVISOR, "jackpot"),
             };
-            assert_eq!(amount, expected_amount, "wrong amount for bucket {}", bucket);
-            assert_eq!(tier,   expected_tier,   "wrong tier for bucket {}",   bucket);
+            assert_eq!(
+                amount, expected_amount,
+                "wrong amount for bucket {}",
+                bucket
+            );
+            assert_eq!(tier, expected_tier, "wrong tier for bucket {}", bucket);
         }
     }
 
@@ -2009,8 +2020,8 @@ mod tests {
         // so we verify the invariants rather than a specific amount.
         // fee=2 → floor(2/2)=1 to miner, 1 to pot → pot_with_fee = initial_pot + 1
         let pot_with_fee = initial_pot + 1;
-        let pot_after    = chain.get_pot();
-        let payout       = pot_with_fee - pot_after; // 0 on no-win, positive on win
+        let pot_after = chain.get_pot();
+        let payout = pot_with_fee - pot_after; // 0 on no-win, positive on win
 
         // Payout must be within [0, max jackpot].
         let max_payout = pot_with_fee / JACKPOT_DIVISOR;
@@ -2389,15 +2400,15 @@ mod tests {
         let genesis_hash = chain.blocks[0].hash.clone();
         let fork = build_chain(
             &[
-                ("fork_1",  GENESIS_TS + 3),
-                ("fork_2",  GENESIS_TS + 4),
-                ("fork_3",  GENESIS_TS + 5),
-                ("fork_4",  GENESIS_TS + 6),
-                ("fork_5",  GENESIS_TS + 7),
-                ("fork_6",  GENESIS_TS + 8),
-                ("fork_7",  GENESIS_TS + 9),
-                ("fork_8",  GENESIS_TS + 10),
-                ("fork_9",  GENESIS_TS + 11),
+                ("fork_1", GENESIS_TS + 3),
+                ("fork_2", GENESIS_TS + 4),
+                ("fork_3", GENESIS_TS + 5),
+                ("fork_4", GENESIS_TS + 6),
+                ("fork_5", GENESIS_TS + 7),
+                ("fork_6", GENESIS_TS + 8),
+                ("fork_7", GENESIS_TS + 9),
+                ("fork_8", GENESIS_TS + 10),
+                ("fork_9", GENESIS_TS + 11),
                 ("fork_10", GENESIS_TS + 12),
             ],
             genesis_hash,
@@ -2417,8 +2428,16 @@ mod tests {
         assert!(saw_reorg, "applying 10 fork blocks must trigger a reorg");
 
         // After the reorg the fork miners have their rewards; main miners do not.
-        assert_eq!(chain.get_balance("main_a"), 0, "displaced miner must lose reward");
-        assert_eq!(chain.get_balance("main_b"), 0, "displaced miner must lose reward");
+        assert_eq!(
+            chain.get_balance("main_a"),
+            0,
+            "displaced miner must lose reward"
+        );
+        assert_eq!(
+            chain.get_balance("main_b"),
+            0,
+            "displaced miner must lose reward"
+        );
         for i in 1..=10 {
             assert_eq!(
                 chain.get_balance(&format!("fork_{}", i)),
@@ -2444,8 +2463,15 @@ mod tests {
 
         // Block 1: Alice sends to Bob (properly signed).
         let tx = Transaction::new_signed(&alice, bob.get_address(), 100, 10);
-        let b1 = next_block(&chain, vec![coinbase_tx("miner"), tx.clone()], GENESIS_TS + 1);
-        assert!(matches!(chain.apply_in_memory(b1, None), BlockOutcome::Applied));
+        let b1 = next_block(
+            &chain,
+            vec![coinbase_tx("miner"), tx.clone()],
+            GENESIS_TS + 1,
+        );
+        assert!(matches!(
+            chain.apply_in_memory(b1, None),
+            BlockOutcome::Applied
+        ));
         assert_eq!(chain.get_balance(&alice.get_address()), 890); // 1000 - 100 - 10
 
         // Block 2: same transaction (identical signature) submitted again.
@@ -2513,11 +2539,7 @@ mod tests {
         assert_eq!(chain.get_balance(&alice.get_address()), 1_000);
 
         // Alice's tx can now legitimately be applied in a new block on the fork chain.
-        let b_new = next_block(
-            &chain,
-            vec![coinbase_tx("fork_miner"), tx],
-            GENESIS_TS + 7,
-        );
+        let b_new = next_block(&chain, vec![coinbase_tx("fork_miner"), tx], GENESIS_TS + 7);
         assert!(
             matches!(chain.apply_in_memory(b_new, None), BlockOutcome::Applied),
             "tx displaced by a reorg must be re-includable on the new canonical chain"
@@ -2554,7 +2576,10 @@ mod tests {
         assert_eq!(total_supply(&chain), base, "initial supply must equal base");
 
         // Block 1: coinbase only — adds 1 coin of new supply.
-        chain.apply_in_memory(next_block(&chain, vec![coinbase_tx("m1")], GENESIS_TS + 1), None);
+        chain.apply_in_memory(
+            next_block(&chain, vec![coinbase_tx("m1")], GENESIS_TS + 1),
+            None,
+        );
         coinbase_rewards += 1;
         assert_eq!(total_supply(&chain), base + coinbase_rewards, "block 1");
 
@@ -2631,17 +2656,35 @@ mod tests {
             "bob balance"
         );
         assert_eq!(restored.get_pot(), original.get_pot(), "pot");
-        assert_eq!(restored.get_chain_work(), original.get_chain_work(), "chain_work");
-        assert_eq!(restored.get_latest_hash(), original.get_latest_hash(), "latest_hash");
-        assert_eq!(restored.get_difficulty(), original.get_difficulty(), "difficulty");
+        assert_eq!(
+            restored.get_chain_work(),
+            original.get_chain_work(),
+            "chain_work"
+        );
+        assert_eq!(
+            restored.get_latest_hash(),
+            original.get_latest_hash(),
+            "latest_hash"
+        );
+        assert_eq!(
+            restored.get_difficulty(),
+            original.get_difficulty(),
+            "difficulty"
+        );
         assert_eq!(restored.get_height(), original.get_height(), "height");
 
         // Applying the same next block on both must produce identical state.
         let tx3 = Transaction::new_signed(&alice, bob.get_address(), 25, 4);
         let next = next_block(&original, vec![coinbase_tx("miner"), tx3], GENESIS_TS + 3);
 
-        assert!(matches!(original.apply_in_memory(next.clone(), None), BlockOutcome::Applied));
-        assert!(matches!(restored.apply_in_memory(next, None), BlockOutcome::Applied));
+        assert!(matches!(
+            original.apply_in_memory(next.clone(), None),
+            BlockOutcome::Applied
+        ));
+        assert!(matches!(
+            restored.apply_in_memory(next, None),
+            BlockOutcome::Applied
+        ));
 
         assert_eq!(
             original.get_balance(&alice.get_address()),
@@ -2654,6 +2697,10 @@ mod tests {
             "bob balance diverges after post-checkpoint block"
         );
         assert_eq!(original.get_pot(), restored.get_pot(), "pot diverges");
-        assert_eq!(original.get_height(), restored.get_height(), "height diverges");
+        assert_eq!(
+            original.get_height(),
+            restored.get_height(),
+            "height diverges"
+        );
     }
 }

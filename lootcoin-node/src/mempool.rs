@@ -40,7 +40,9 @@ impl Mempool {
     pub fn restore(&mut self, entries: Vec<(Transaction, u64)>) {
         for (tx, added_height) in entries {
             let sig = tx.signature.clone();
-            self.entries.entry(sig).or_insert(MempoolEntry { tx, added_height });
+            self.entries
+                .entry(sig)
+                .or_insert(MempoolEntry { tx, added_height });
         }
     }
 
@@ -56,12 +58,10 @@ impl Mempool {
         }
         let sig = tx.signature.clone();
         let is_new = !self.entries.contains_key(&sig);
-        self.entries
-            .entry(sig.clone())
-            .or_insert(MempoolEntry {
-                tx: tx.clone(),
-                added_height: current_height,
-            });
+        self.entries.entry(sig.clone()).or_insert(MempoolEntry {
+            tx: tx.clone(),
+            added_height: current_height,
+        });
         if is_new {
             if let Some(db) = &self.db {
                 if let Err(e) = db.save_mempool_tx(&sig, &tx, current_height) {
@@ -82,7 +82,10 @@ impl Mempool {
         }
         if let Some(db) = &self.db {
             if let Err(e) = db.remove_mempool_txs(&removed_sigs) {
-                tracing::warn!("Failed to remove confirmed txs from persisted mempool: {}", e);
+                tracing::warn!(
+                    "Failed to remove confirmed txs from persisted mempool: {}",
+                    e
+                );
             }
         }
     }

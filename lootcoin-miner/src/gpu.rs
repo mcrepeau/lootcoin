@@ -85,8 +85,10 @@ impl GpuMiner {
         cancel: &AtomicBool,
         shutdown: &AtomicBool,
     ) -> anyhow::Result<Option<(u64, u64)>> {
-        let tmpl_dev: CudaSlice<u8> =
-            cuda!(self.dev.htod_sync_copy(tmpl.as_ref()), "htod_sync_copy tmpl");
+        let tmpl_dev: CudaSlice<u8> = cuda!(
+            self.dev.htod_sync_copy(tmpl.as_ref()),
+            "htod_sync_copy tmpl"
+        );
 
         let mut out_nonce: CudaSlice<u64> =
             cuda!(self.dev.alloc_zeros::<u64>(1), "alloc out_nonce");
@@ -112,7 +114,13 @@ impl GpuMiner {
                 cuda!(
                     self.func.clone().launch(
                         cfg,
-                        (&tmpl_dev, nonce_base, difficulty, &mut out_nonce, &mut out_found),
+                        (
+                            &tmpl_dev,
+                            nonce_base,
+                            difficulty,
+                            &mut out_nonce,
+                            &mut out_found
+                        ),
                     ),
                     "kernel launch"
                 );
