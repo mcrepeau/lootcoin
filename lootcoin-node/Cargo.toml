@@ -45,3 +45,6 @@ url           = "2"
 # Metrics
 prometheus-client = "0.22"
 
+[dev-dependencies]
+tower = { version = "0.5", features = ["util"] }
+

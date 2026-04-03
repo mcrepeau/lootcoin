@@ -169,6 +169,16 @@ impl Blockchain {
         chain
     }
 
+    /// Identical to `new` but forces difficulty to 0 so tests can submit blocks
+    /// without performing proof-of-work. Never use outside `#[cfg(test)]`.
+    #[cfg(test)]
+    pub fn new_for_test(genesis: Block) -> Self {
+        let mut chain = Self::new(genesis);
+        chain.current_difficulty = 0.0;
+        chain.initial_difficulty = 0.0;
+        chain
+    }
+
     pub fn get_latest_hash(&self) -> Vec<u8> {
         self.blocks
             .last()

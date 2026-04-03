@@ -1149,7 +1149,799 @@ pub fn router(state: AppState) -> Router {
 
 #[cfg(test)]
 mod tests {
-    use super::is_safe_peer_url;
+    use super::*;
+    use crate::blockchain::Blockchain;
+    use crate::db::Db;
+    use crate::gossip::Gossip;
+    use crate::mempool::Mempool;
+    use crate::metrics::Metrics;
+    use axum::body::{to_bytes, Body};
+    use axum::http::{Request, StatusCode};
+    use lootcoin_core::{block::Block, transaction::Transaction, wallet::Wallet};
+    use std::sync::Arc;
+    use std::sync::atomic::AtomicUsize;
+    use std::time::{SystemTime, UNIX_EPOCH};
+    use tokio::sync::{watch, RwLock};
+    use tower::ServiceExt;
+
+    // ── state helpers ─────────────────────────────────────────────────────────
+
+    fn test_wallet() -> Wallet {
+        // Fixed key so tests are deterministic
+        Wallet::from_secret_key_bytes([1u8; 32])
+    }
+
+    fn make_state(wallet: &Wallet) -> AppState {
+        let db = Arc::new(Db::new_in_memory().unwrap());
+        // Genesis credits the wallet address so submit-tx tests have a balance
+        let genesis_txs = vec![Transaction {
+            sender: String::new(),
+            receiver: wallet.get_address(),
+            amount: 10_000,
+            fee: 0,
+            nonce: 0,
+            public_key: [0u8; 32],
+            signature: vec![],
+        }];
+        let genesis = Block {
+            index: 0,
+            previous_hash: vec![0u8; 32],
+            timestamp: 1_700_000_000,
+            nonce: 0,
+            tx_root: Block::compute_tx_root(&genesis_txs),
+            transactions: genesis_txs,
+            hash: vec![],
+        };
+        let (_shutdown_tx, shutdown_rx) = watch::channel(false);
+        AppState {
+            db,
+            chain: Arc::new(RwLock::new(Blockchain::new_for_test(genesis))),
+            mempool: Arc::new(RwLock::new(Mempool::new(None))),
+            gossip: Arc::new(Gossip::new(vec![])),
+            shutdown_rx,
+            sse_subscribers: Arc::new(AtomicUsize::new(0)),
+            metrics: Arc::new(Metrics::new()),
+            history_start: 0,
+        }
+    }
+
+    fn now_secs() -> u64 {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+    }
+
+    /// Build the next valid coinbase-only block on the current chain tip.
+    /// With difficulty=0 any hash passes, so no real PoW is needed.
+    async fn next_valid_block(state: &AppState) -> Block {
+        let chain = state.chain.read().await;
+        let txs = vec![Transaction {
+            sender: String::new(),
+            receiver: "miner".to_string(),
+            amount: 1,
+            fee: 0,
+            nonce: 0,
+            public_key: [0u8; 32],
+            signature: vec![],
+        }];
+        let tx_root = Block::compute_tx_root(&txs);
+        let mut b = Block {
+            index: chain.get_height(),
+            previous_hash: chain.get_latest_hash(),
+            timestamp: now_secs(),
+            nonce: 0,
+            tx_root,
+            transactions: txs,
+            hash: vec![],
+        };
+        b.hash = b.calculate_hash();
+        b
+    }
+
+    async fn get_req(state: AppState, uri: &str) -> axum::http::Response<Body> {
+        router(state)
+            .oneshot(Request::get(uri).body(Body::empty()).unwrap())
+            .await
+            .unwrap()
+    }
+
+    async fn post_json(
+        state: AppState,
+        uri: &str,
+        body: serde_json::Value,
+    ) -> axum::http::Response<Body> {
+        router(state)
+            .oneshot(
+                Request::post(uri)
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_vec(&body).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap()
+    }
+
+    async fn json_body(resp: axum::http::Response<Body>) -> serde_json::Value {
+        let bytes = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        serde_json::from_slice(&bytes).unwrap()
+    }
+
+    // ── GET /balance/{address} ────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn balance_unknown_address_returns_zero() {
+        let wallet = test_wallet();
+        let state = make_state(&wallet);
+        let resp = get_req(state, "/balance/nobody").await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = json_body(resp).await;
+        assert_eq!(body["balance"], 0);
+        assert_eq!(body["spendable_balance"], 0);
+    }
+
+    #[tokio::test]
+    async fn balance_funded_address_returns_genesis_amount() {
+        let wallet = test_wallet();
+        let addr = wallet.get_address();
+        let state = make_state(&wallet);
+        let resp = get_req(state, &format!("/balance/{}", addr)).await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = json_body(resp).await;
+        assert_eq!(body["balance"], 10_000);
+        assert_eq!(body["spendable_balance"], 10_000);
+        assert_eq!(body["address"], addr);
+    }
+
+    #[tokio::test]
+    async fn balance_spendable_decreases_when_tx_in_mempool() {
+        let wallet = test_wallet();
+        let addr = wallet.get_address();
+        let state = make_state(&wallet);
+        // Insert a pending tx for the wallet address directly into mempool
+        let pending = Transaction {
+            sender: addr.clone(),
+            receiver: "bob".to_string(),
+            amount: 500,
+            fee: 2,
+            nonce: 0,
+            public_key: [0u8; 32],
+            signature: vec![0xAA],
+        };
+        state.mempool.write().await.add_transaction(pending, 1);
+        let resp = get_req(state, &format!("/balance/{}", addr)).await;
+        let body = json_body(resp).await;
+        assert_eq!(body["balance"], 10_000);
+        assert_eq!(body["spendable_balance"], 10_000 - 502); // 500 + 2
+    }
+
+    // ── GET /chain/head ───────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn chain_head_returns_correct_shape() {
+        let wallet = test_wallet();
+        let state = make_state(&wallet);
+        let resp = get_req(state, "/chain/head").await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = json_body(resp).await;
+        assert_eq!(body["height"], 1); // genesis counts as block 0, height=1
+        assert_eq!(body["mempool_size"], 0);
+        assert!(body["difficulty"].is_number());
+        assert!(body["chain_work_hex"].is_string());
+        assert!(body["pot"].is_number());
+    }
+
+    // ── GET /mempool ──────────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn mempool_empty_returns_empty_array() {
+        let wallet = test_wallet();
+        let resp = get_req(make_state(&wallet), "/mempool").await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(json_body(resp).await, serde_json::json!([]));
+    }
+
+    #[tokio::test]
+    async fn mempool_returns_pending_transactions() {
+        let wallet = test_wallet();
+        let state = make_state(&wallet);
+        let tx = Transaction {
+            sender: "alice".to_string(),
+            receiver: "bob".to_string(),
+            amount: 100,
+            fee: 2,
+            nonce: 0,
+            public_key: [0u8; 32],
+            signature: vec![0x01],
+        };
+        state.mempool.write().await.add_transaction(tx, 1);
+        let resp = get_req(state, "/mempool").await;
+        let body = json_body(resp).await;
+        assert_eq!(body.as_array().unwrap().len(), 1);
+        assert_eq!(body[0]["transaction"]["amount"], 100);
+        assert_eq!(body[0]["added_height"], 1);
+    }
+
+    // ── GET /mempool/fees ─────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn mempool_fees_empty_pool() {
+        let wallet = test_wallet();
+        let resp = get_req(make_state(&wallet), "/mempool/fees").await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = json_body(resp).await;
+        assert_eq!(body["count"], 0);
+        assert!(body["min"].is_null());
+        assert!(body["max"].is_null());
+    }
+
+    #[tokio::test]
+    async fn mempool_fees_non_empty_pool() {
+        let wallet = test_wallet();
+        let state = make_state(&wallet);
+        for (i, fee) in [5u64, 10, 20].iter().enumerate() {
+            state.mempool.write().await.add_transaction(
+                Transaction {
+                    sender: "a".to_string(),
+                    receiver: "b".to_string(),
+                    amount: 1,
+                    fee: *fee,
+                    nonce: 0,
+                    public_key: [0u8; 32],
+                    signature: vec![i as u8],
+                },
+                0,
+            );
+        }
+        let body = json_body(get_req(state, "/mempool/fees").await).await;
+        assert_eq!(body["count"], 3);
+        assert_eq!(body["min"], 5);
+        assert_eq!(body["max"], 20);
+    }
+
+    // ── GET /blocks ───────────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn get_blocks_empty_db_returns_empty_array() {
+        let wallet = test_wallet();
+        let resp = get_req(make_state(&wallet), "/blocks?from=0&limit=10").await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(json_body(resp).await, serde_json::json!([]));
+    }
+
+    #[tokio::test]
+    async fn get_blocks_returns_stored_block() {
+        let wallet = test_wallet();
+        let state = make_state(&wallet);
+        let block = Block {
+            index: 0,
+            previous_hash: vec![],
+            timestamp: 1_700_000_000,
+            nonce: 0,
+            tx_root: vec![],
+            transactions: vec![],
+            hash: vec![1, 2, 3],
+        };
+        state.db.save_block_indexed(&block).unwrap();
+        let body = json_body(get_req(state, "/blocks?from=0&limit=1").await).await;
+        assert_eq!(body.as_array().unwrap().len(), 1);
+        assert_eq!(body[0]["index"], 0);
+    }
+
+    // ── GET /address/{address}/transactions ───────────────────────────────────
+
+    #[tokio::test]
+    async fn address_transactions_empty_for_unknown() {
+        let wallet = test_wallet();
+        let resp = get_req(make_state(&wallet), "/address/nobody/transactions").await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(json_body(resp).await, serde_json::json!([]));
+    }
+
+    #[tokio::test]
+    async fn address_transactions_returns_results_from_db() {
+        let wallet = test_wallet();
+        let addr = wallet.get_address();
+        let state = make_state(&wallet);
+        let g = Block {
+            index: 0,
+            previous_hash: vec![0u8; 32],
+            timestamp: 1_700_000_000,
+            nonce: 0,
+            tx_root: vec![],
+            transactions: vec![Transaction {
+                sender: String::new(),
+                receiver: addr.clone(),
+                amount: 50,
+                fee: 0,
+                nonce: 0,
+                public_key: [0u8; 32],
+                signature: vec![],
+            }],
+            hash: vec![],
+        };
+        state.db.save_applied_block(&g, &[], &[]).unwrap();
+        let body = json_body(get_req(state, &format!("/address/{}/transactions", addr)).await).await;
+        assert_eq!(body.as_array().unwrap().len(), 1);
+        assert_eq!(body[0]["receiver"], addr);
+    }
+
+    #[tokio::test]
+    async fn address_transactions_limit_param_respected() {
+        let wallet = test_wallet();
+        let state = make_state(&wallet);
+        // Save 3 blocks each containing a tx to "alice"
+        let mut prev = Block {
+            index: 0,
+            previous_hash: vec![],
+            timestamp: 1_700_000_000,
+            nonce: 0,
+            tx_root: vec![],
+            transactions: vec![],
+            hash: vec![],
+        };
+        for i in 0u64..3 {
+            let b = Block {
+                index: i,
+                previous_hash: vec![],
+                timestamp: 1_700_000_000 + i,
+                nonce: 0,
+                tx_root: vec![],
+                transactions: vec![Transaction {
+                    sender: String::new(),
+                    receiver: "alice".to_string(),
+                    amount: 1,
+                    fee: 0,
+                    nonce: 0,
+                    public_key: [0u8; 32],
+                    signature: vec![],
+                }],
+                hash: vec![i as u8],
+            };
+            state.db.save_applied_block(&b, &[], &[]).unwrap();
+            prev = b;
+        }
+        let body = json_body(
+            get_req(state, "/address/alice/transactions?limit=2").await,
+        )
+        .await;
+        assert_eq!(body.as_array().unwrap().len(), 2);
+    }
+
+    // ── GET /chain/block-hash/{height} ────────────────────────────────────────
+
+    #[tokio::test]
+    async fn block_hash_missing_height_returns_404() {
+        let wallet = test_wallet();
+        let resp = get_req(make_state(&wallet), "/chain/block-hash/999").await;
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn block_hash_existing_height_returns_hex() {
+        let wallet = test_wallet();
+        let state = make_state(&wallet);
+        let block = Block {
+            index: 7,
+            previous_hash: vec![],
+            timestamp: 0,
+            nonce: 0,
+            tx_root: vec![],
+            transactions: vec![],
+            hash: vec![0xab, 0xcd],
+        };
+        state.db.save_block_indexed(&block).unwrap();
+        let body = json_body(get_req(state, "/chain/block-hash/7").await).await;
+        assert_eq!(body["height"], 7);
+        assert_eq!(body["block_hash_hex"], "abcd");
+    }
+
+    // ── GET /node/info ────────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn node_info_returns_version_and_history_start() {
+        let wallet = test_wallet();
+        let resp = get_req(make_state(&wallet), "/node/info").await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = json_body(resp).await;
+        assert!(body["version"].is_string());
+        assert_eq!(body["history_start"], 0);
+    }
+
+    // ── GET /snapshots ────────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn snapshots_empty_when_no_trusted_checkpoints() {
+        let wallet = test_wallet();
+        let resp = get_req(make_state(&wallet), "/snapshots").await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        // TRUSTED_CHECKPOINTS is empty in this codebase → no entries served
+        assert_eq!(json_body(resp).await, serde_json::json!([]));
+    }
+
+    // ── GET /snapshot/{height} ────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn snapshot_unknown_height_returns_404() {
+        let wallet = test_wallet();
+        let resp = get_req(make_state(&wallet), "/snapshot/1000").await;
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    // ── GET /peers ────────────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn get_peers_empty_initially() {
+        let wallet = test_wallet();
+        let resp = get_req(make_state(&wallet), "/peers").await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(json_body(resp).await["peers"], serde_json::json!([]));
+    }
+
+    // ── GET /lottery/recent-payouts ───────────────────────────────────────────
+
+    #[tokio::test]
+    async fn recent_payouts_empty_initially() {
+        let wallet = test_wallet();
+        let resp = get_req(make_state(&wallet), "/lottery/recent-payouts").await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(json_body(resp).await, serde_json::json!([]));
+    }
+
+    #[tokio::test]
+    async fn recent_payouts_tier_filter_applied() {
+        let wallet = test_wallet();
+        let state = make_state(&wallet);
+        // Store a block with mixed-tier payouts
+        let b = Block {
+            index: 1,
+            previous_hash: vec![],
+            timestamp: 1_700_000_010,
+            nonce: 0,
+            tx_root: vec![],
+            transactions: vec![],
+            hash: vec![1],
+        };
+        state
+            .db
+            .save_applied_block(
+                &b,
+                &[],
+                &[
+                    ("alice".to_string(), 100u64, "small".to_string()),
+                    ("bob".to_string(), 500u64, "jackpot".to_string()),
+                ],
+            )
+            .unwrap();
+        let body = json_body(
+            get_req(state, "/lottery/recent-payouts?tier=jackpot").await,
+        )
+        .await;
+        assert_eq!(body.as_array().unwrap().len(), 1);
+        assert_eq!(body[0]["tier"], "jackpot");
+    }
+
+    // ── POST /peers ───────────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn add_peer_loopback_address_returns_400() {
+        let wallet = test_wallet();
+        let resp = post_json(
+            make_state(&wallet),
+            "/peers",
+            serde_json::json!({"url": "http://127.0.0.1:3000"}),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn add_peer_private_range_returns_400() {
+        let wallet = test_wallet();
+        let resp = post_json(
+            make_state(&wallet),
+            "/peers",
+            serde_json::json!({"url": "http://192.168.1.1:3000"}),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn add_peer_valid_public_url_returns_200() {
+        let wallet = test_wallet();
+        let resp = post_json(
+            make_state(&wallet),
+            "/peers",
+            serde_json::json!({"url": "http://8.8.8.8:3000"}),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    // ── POST /transactions ────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn submit_tx_sender_equals_receiver_returns_400() {
+        let wallet = test_wallet();
+        let addr = wallet.get_address();
+        let resp = post_json(
+            make_state(&wallet),
+            "/transactions",
+            serde_json::json!({
+                "sender": addr, "receiver": addr,
+                "amount": 100, "fee": 2, "nonce": 1,
+                "public_key_hex": "00".repeat(32),
+                "signature_hex": "00".repeat(64),
+            }),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn submit_tx_invalid_public_key_hex_returns_400() {
+        let wallet = test_wallet();
+        let resp = post_json(
+            make_state(&wallet),
+            "/transactions",
+            serde_json::json!({
+                "sender": "alice", "receiver": "bob",
+                "amount": 100, "fee": 2, "nonce": 1,
+                "public_key_hex": "not-hex",
+                "signature_hex": "00".repeat(64),
+            }),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn submit_tx_wrong_length_public_key_returns_400() {
+        let wallet = test_wallet();
+        let resp = post_json(
+            make_state(&wallet),
+            "/transactions",
+            serde_json::json!({
+                "sender": "alice", "receiver": "bob",
+                "amount": 100, "fee": 2, "nonce": 1,
+                "public_key_hex": "aabb", // 2 bytes, not 32
+                "signature_hex": "00".repeat(64),
+            }),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn submit_tx_invalid_signature_hex_returns_400() {
+        let wallet = test_wallet();
+        let resp = post_json(
+            make_state(&wallet),
+            "/transactions",
+            serde_json::json!({
+                "sender": "alice", "receiver": "bob",
+                "amount": 100, "fee": 2, "nonce": 1,
+                "public_key_hex": "00".repeat(32),
+                "signature_hex": "not-hex",
+            }),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn submit_tx_wrong_signature_returns_400() {
+        let wallet = test_wallet();
+        // Correctly formatted but cryptographically invalid signature
+        let resp = post_json(
+            make_state(&wallet),
+            "/transactions",
+            serde_json::json!({
+                "sender": "alice", "receiver": "bob",
+                "amount": 100, "fee": 2, "nonce": 1,
+                "public_key_hex": "00".repeat(32),
+                "signature_hex": "00".repeat(64),
+            }),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn submit_tx_valid_signed_transaction_accepted() {
+        let wallet = test_wallet();
+        let state = make_state(&wallet);
+        let tx = Transaction::new_signed(&wallet, "bob".to_string(), 100, 2);
+        let resp = post_json(
+            state,
+            "/transactions",
+            serde_json::json!({
+                "sender": tx.sender,
+                "receiver": tx.receiver,
+                "amount": tx.amount,
+                "fee": tx.fee,
+                "nonce": tx.nonce,
+                "public_key_hex": hex::encode(tx.public_key),
+                "signature_hex": hex::encode(&tx.signature),
+            }),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = json_body(resp).await;
+        assert_eq!(body["receiver"], "bob");
+        assert_eq!(body["amount"], 100);
+    }
+
+    #[tokio::test]
+    async fn submit_tx_insufficient_balance_returns_400() {
+        let wallet = test_wallet();
+        let state = make_state(&wallet);
+        // Wallet only has 10_000; try to spend far more
+        let tx = Transaction::new_signed(&wallet, "bob".to_string(), 999_999, 2);
+        let resp = post_json(
+            state,
+            "/transactions",
+            serde_json::json!({
+                "sender": tx.sender,
+                "receiver": tx.receiver,
+                "amount": tx.amount,
+                "fee": tx.fee,
+                "nonce": tx.nonce,
+                "public_key_hex": hex::encode(tx.public_key),
+                "signature_hex": hex::encode(&tx.signature),
+            }),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn submit_tx_fee_below_minimum_returns_400() {
+        let wallet = test_wallet();
+        let state = make_state(&wallet);
+        // Fee = 1, below MIN_TX_FEE = 2
+        let tx = Transaction::new_signed(&wallet, "bob".to_string(), 10, 1);
+        let resp = post_json(
+            state,
+            "/transactions",
+            serde_json::json!({
+                "sender": tx.sender,
+                "receiver": tx.receiver,
+                "amount": tx.amount,
+                "fee": tx.fee,
+                "nonce": tx.nonce,
+                "public_key_hex": hex::encode(tx.public_key),
+                "signature_hex": hex::encode(&tx.signature),
+            }),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    // ── POST /blocks ──────────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn submit_block_wrong_hash_returns_400() {
+        let wallet = test_wallet();
+        let state = make_state(&wallet);
+        let chain = state.chain.read().await;
+        let txs = vec![Transaction {
+            sender: String::new(),
+            receiver: "miner".to_string(),
+            amount: 1,
+            fee: 0,
+            nonce: 0,
+            public_key: [0u8; 32],
+            signature: vec![],
+        }];
+        let b = Block {
+            index: chain.get_height(),
+            previous_hash: chain.get_latest_hash(),
+            timestamp: now_secs(),
+            nonce: 0,
+            tx_root: Block::compute_tx_root(&txs),
+            transactions: txs,
+            hash: vec![0xFF; 32], // deliberately wrong
+        };
+        drop(chain);
+        let resp = post_json(state, "/blocks", serde_json::json!(b)).await;
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn submit_block_coinbase_amount_too_high_returns_400() {
+        let wallet = test_wallet();
+        let state = make_state(&wallet);
+        let chain = state.chain.read().await;
+        let txs = vec![Transaction {
+            sender: String::new(),
+            receiver: "miner".to_string(),
+            amount: 100, // > 1, rejected by apply_incoming_block
+            fee: 0,
+            nonce: 0,
+            public_key: [0u8; 32],
+            signature: vec![],
+        }];
+        let tx_root = Block::compute_tx_root(&txs);
+        let mut b = Block {
+            index: chain.get_height(),
+            previous_hash: chain.get_latest_hash(),
+            timestamp: now_secs(),
+            nonce: 0,
+            tx_root,
+            transactions: txs,
+            hash: vec![],
+        };
+        b.hash = b.calculate_hash();
+        drop(chain);
+        let resp = post_json(state, "/blocks", serde_json::json!(b)).await;
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn submit_block_no_coinbase_returns_400() {
+        let wallet = test_wallet();
+        let state = make_state(&wallet);
+        let chain = state.chain.read().await;
+        // Non-empty sender on first tx — rejected as non-coinbase
+        let txs = vec![Transaction {
+            sender: "alice".to_string(),
+            receiver: "bob".to_string(),
+            amount: 1,
+            fee: 2,
+            nonce: 0,
+            public_key: [0u8; 32],
+            signature: vec![],
+        }];
+        let tx_root = Block::compute_tx_root(&txs);
+        let mut b = Block {
+            index: chain.get_height(),
+            previous_hash: chain.get_latest_hash(),
+            timestamp: now_secs(),
+            nonce: 0,
+            tx_root,
+            transactions: txs,
+            hash: vec![],
+        };
+        b.hash = b.calculate_hash();
+        drop(chain);
+        let resp = post_json(state, "/blocks", serde_json::json!(b)).await;
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn submit_block_valid_block_accepted() {
+        let wallet = test_wallet();
+        let state = make_state(&wallet);
+        let block = next_valid_block(&state).await;
+        let resp = post_json(state, "/blocks", serde_json::json!(block)).await;
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn submit_block_advances_chain_height() {
+        let wallet = test_wallet();
+        let state = make_state(&wallet);
+        let block = next_valid_block(&state).await;
+        post_json(state.clone(), "/blocks", serde_json::json!(block)).await;
+        let body = json_body(get_req(state, "/chain/head").await).await;
+        assert_eq!(body["height"], 2);
+    }
+
+    #[tokio::test]
+    async fn submit_block_already_applied_returns_non_ok() {
+        let wallet = test_wallet();
+        let state = make_state(&wallet);
+        let block = next_valid_block(&state).await;
+        // First submission succeeds
+        post_json(state.clone(), "/blocks", serde_json::json!(&block)).await;
+        // Second submission of the same block is rejected (wrong index now)
+        let resp = post_json(state, "/blocks", serde_json::json!(&block)).await;
+        assert_ne!(resp.status(), StatusCode::OK);
+    }
+
+    // ── is_safe_peer_url ──────────────────────────────────────────────────────
 
     // ── is_safe_peer_url ──────────────────────────────────────────────────────
 
