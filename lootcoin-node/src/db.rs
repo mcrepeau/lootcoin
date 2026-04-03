@@ -825,3 +825,676 @@ impl Db {
         Ok(blocks)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use lootcoin_core::{block::Block, transaction::Transaction};
+
+    // ── helpers ───────────────────────────────────────────────────────────────
+
+    fn user_tx(sender: &str, receiver: &str, amount: u64, fee: u64, sig_byte: u8) -> Transaction {
+        Transaction {
+            sender: sender.to_string(),
+            receiver: receiver.to_string(),
+            amount,
+            fee,
+            nonce: 0,
+            public_key: [0u8; 32],
+            signature: vec![sig_byte],
+        }
+    }
+
+    fn coinbase(receiver: &str) -> Transaction {
+        Transaction {
+            sender: String::new(),
+            receiver: receiver.to_string(),
+            amount: 50,
+            fee: 0,
+            nonce: 0,
+            public_key: [0u8; 32],
+            signature: vec![],
+        }
+    }
+
+    fn genesis() -> Block {
+        let txs = vec![coinbase("genesis_miner")];
+        Block {
+            index: 0,
+            previous_hash: vec![0u8; 32],
+            timestamp: 1_700_000_000,
+            nonce: 0,
+            tx_root: Block::compute_tx_root(&txs),
+            transactions: txs,
+            hash: vec![],
+        }
+    }
+
+    fn next_block(prev: &Block, txs: Vec<Transaction>, timestamp: u64) -> Block {
+        let tx_root = Block::compute_tx_root(&txs);
+        let mut b = Block {
+            index: prev.index + 1,
+            previous_hash: prev.hash.clone(),
+            timestamp,
+            nonce: 0,
+            tx_root,
+            transactions: txs,
+            hash: vec![],
+        };
+        b.hash = b.calculate_hash();
+        b
+    }
+
+    fn ticket(miner: &str, height: u64) -> LootTicket {
+        LootTicket { miner: miner.to_string(), created_height: height }
+    }
+
+    fn db() -> Db {
+        Db::new_in_memory().expect("in-memory db")
+    }
+
+    // ── Block storage ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn save_block_indexed_roundtrip() {
+        let db = db();
+        let g = genesis();
+        db.save_block_indexed(&g).unwrap();
+        let loaded = db.get_blocks_range(0, 1).unwrap();
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded[0].index, 0);
+        assert_eq!(loaded[0].timestamp, 1_700_000_000);
+    }
+
+    #[test]
+    fn get_blocks_range_empty_db() {
+        assert!(db().get_blocks_range(0, 10).unwrap().is_empty());
+    }
+
+    #[test]
+    fn get_blocks_range_out_of_range() {
+        let db = db();
+        db.save_block_indexed(&genesis()).unwrap();
+        assert!(db.get_blocks_range(5, 3).unwrap().is_empty());
+    }
+
+    #[test]
+    fn get_blocks_range_partial_window() {
+        let db = db();
+        let g = genesis();
+        let b1 = next_block(&g, vec![coinbase("m")], 1_700_000_010);
+        let b2 = next_block(&b1, vec![coinbase("m")], 1_700_000_020);
+        db.save_block_indexed(&g).unwrap();
+        db.save_block_indexed(&b1).unwrap();
+        db.save_block_indexed(&b2).unwrap();
+        let result = db.get_blocks_range(1, 1).unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].index, 1);
+    }
+
+    #[test]
+    fn load_canonical_chain_returns_all_in_order() {
+        let db = db();
+        let g = genesis();
+        let b1 = next_block(&g, vec![coinbase("m")], 1_700_000_010);
+        let b2 = next_block(&b1, vec![coinbase("m")], 1_700_000_020);
+        db.save_block_indexed(&g).unwrap();
+        db.save_block_indexed(&b1).unwrap();
+        db.save_block_indexed(&b2).unwrap();
+        let chain = db.load_canonical_chain().unwrap();
+        assert_eq!(chain.len(), 3);
+        assert_eq!(chain[0].index, 0);
+        assert_eq!(chain[1].index, 1);
+        assert_eq!(chain[2].index, 2);
+    }
+
+    #[test]
+    fn load_blocks_from_skips_earlier() {
+        let db = db();
+        let g = genesis();
+        let b1 = next_block(&g, vec![coinbase("m")], 1_700_000_010);
+        let b2 = next_block(&b1, vec![coinbase("m")], 1_700_000_020);
+        db.save_block_indexed(&g).unwrap();
+        db.save_block_indexed(&b1).unwrap();
+        db.save_block_indexed(&b2).unwrap();
+        let tail = db.load_blocks_from(2).unwrap();
+        assert_eq!(tail.len(), 1);
+        assert_eq!(tail[0].index, 2);
+    }
+
+    // ── save_applied_block ────────────────────────────────────────────────────
+
+    #[test]
+    fn save_applied_block_stores_block() {
+        let db = db();
+        let g = genesis();
+        let b1 = next_block(&g, vec![coinbase("alice")], 1_700_000_010);
+        db.save_applied_block(&b1, &[], &[]).unwrap();
+        assert_eq!(db.get_blocks_range(1, 1).unwrap()[0].index, 1);
+    }
+
+    #[test]
+    fn save_applied_block_indexes_receiver() {
+        let db = db();
+        let g = genesis();
+        let b1 = next_block(&g, vec![coinbase("alice")], 1_700_000_010);
+        db.save_applied_block(&b1, &[], &[]).unwrap();
+        let records = db.get_transactions_for_address("alice", 0, 10).unwrap();
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].receiver, "alice");
+    }
+
+    #[test]
+    fn save_applied_block_indexes_sender_and_receiver() {
+        let db = db();
+        let g = genesis();
+        let b1 = next_block(&g, vec![user_tx("alice", "bob", 10, 2, 1)], 1_700_000_010);
+        db.save_applied_block(&b1, &[], &[]).unwrap();
+        assert_eq!(db.get_transactions_for_address("alice", 0, 10).unwrap().len(), 1);
+        assert_eq!(db.get_transactions_for_address("bob", 0, 10).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn save_applied_block_coinbase_has_no_sender_index_entry() {
+        let db = db();
+        let g = genesis();
+        let b1 = next_block(&g, vec![coinbase("miner")], 1_700_000_010);
+        db.save_applied_block(&b1, &[], &[]).unwrap();
+        // receiver entry exists, empty-sender entry does not
+        assert_eq!(db.get_transactions_for_address("miner", 0, 10).unwrap().len(), 1);
+        assert_eq!(db.get_transactions_for_address("", 0, 10).unwrap().len(), 0);
+    }
+
+    #[test]
+    fn save_applied_block_confirms_user_tx_signature() {
+        let db = db();
+        let g = genesis();
+        let t = user_tx("alice", "bob", 10, 2, 42);
+        let b1 = next_block(&g, vec![t.clone()], 1_700_000_010);
+        db.save_applied_block(&b1, &[], &[]).unwrap();
+        assert!(db.is_confirmed_signature(&t.signature).unwrap());
+    }
+
+    #[test]
+    fn save_applied_block_does_not_confirm_coinbase_signature() {
+        let db = db();
+        let g = genesis();
+        let cb = coinbase("miner");
+        let b1 = next_block(&g, vec![cb.clone()], 1_700_000_010);
+        db.save_applied_block(&b1, &[], &[]).unwrap();
+        assert!(!db.is_confirmed_signature(&cb.signature).unwrap());
+    }
+
+    #[test]
+    fn save_applied_block_replaces_tickets_atomically() {
+        let db = db();
+        let g = genesis();
+        let b1 = next_block(&g, vec![coinbase("m")], 1_700_000_010);
+        db.save_applied_block(&b1, &[ticket("old_miner", 1)], &[]).unwrap();
+        let b2 = next_block(&b1, vec![coinbase("m")], 1_700_000_020);
+        db.save_applied_block(&b2, &[ticket("new_miner", 2)], &[]).unwrap();
+        let loaded = db.load_tickets().unwrap();
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded[0].miner, "new_miner");
+    }
+
+    #[test]
+    fn save_applied_block_stores_lottery_payout_and_indexes_it() {
+        let db = db();
+        let g = genesis();
+        let b1 = next_block(&g, vec![coinbase("m")], 1_700_000_010);
+        let payouts = vec![("alice".to_string(), 500u64, "jackpot".to_string())];
+        db.save_applied_block(&b1, &[], &payouts).unwrap();
+        // lottery entry visible in address history with sender="lottery"
+        let records = db.get_transactions_for_address("alice", 0, 10).unwrap();
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].sender, "lottery");
+        assert_eq!(records[0].amount, 500);
+        // LOTTERY_PAYOUTS table has the entry
+        assert!(db.get_lottery_payouts_range(1, 1).unwrap().contains_key(&1));
+    }
+
+    // ── get_transactions_for_address ──────────────────────────────────────────
+
+    #[test]
+    fn get_transactions_unknown_address_is_empty() {
+        assert!(db().get_transactions_for_address("nobody", 0, 10).unwrap().is_empty());
+    }
+
+    #[test]
+    fn get_transactions_pagination_offset_and_limit() {
+        let db = db();
+        let g = genesis();
+        let b1 = next_block(&g, vec![coinbase("alice")], 1_700_000_010);
+        let b2 = next_block(&b1, vec![coinbase("alice")], 1_700_000_020);
+        let b3 = next_block(&b2, vec![coinbase("alice")], 1_700_000_030);
+        db.save_applied_block(&b1, &[], &[]).unwrap();
+        db.save_applied_block(&b2, &[], &[]).unwrap();
+        db.save_applied_block(&b3, &[], &[]).unwrap();
+        // newest 2
+        let page1 = db.get_transactions_for_address("alice", 0, 2).unwrap();
+        assert_eq!(page1.len(), 2);
+        assert_eq!(page1[0].block_index, 3);
+        assert_eq!(page1[1].block_index, 2);
+        // skip newest 2, get oldest
+        let page2 = db.get_transactions_for_address("alice", 2, 10).unwrap();
+        assert_eq!(page2.len(), 1);
+        assert_eq!(page2[0].block_index, 1);
+    }
+
+    // ── rebuild_tx_index ──────────────────────────────────────────────────────
+
+    #[test]
+    fn rebuild_tx_index_clears_stale_entries() {
+        let db = db();
+        let g = genesis();
+        let b1 = next_block(&g, vec![user_tx("alice", "bob", 10, 2, 1)], 1_700_000_010);
+        db.save_applied_block(&b1, &[], &[]).unwrap();
+        // Rebuild from empty list — wipes everything
+        db.rebuild_tx_index(&[], &HashMap::new()).unwrap();
+        assert!(db.get_transactions_for_address("alice", 0, 10).unwrap().is_empty());
+        assert!(db.get_transactions_for_address("bob", 0, 10).unwrap().is_empty());
+    }
+
+    #[test]
+    fn rebuild_tx_index_repopulates_from_blocks() {
+        let db = db();
+        let g = genesis();
+        let b1 = next_block(&g, vec![coinbase("alice")], 1_700_000_010);
+        db.rebuild_tx_index(&[g, b1], &HashMap::new()).unwrap();
+        assert_eq!(db.get_transactions_for_address("alice", 0, 10).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn rebuild_tx_index_includes_lottery_payouts() {
+        let db = db();
+        let g = genesis();
+        let b1 = next_block(&g, vec![coinbase("m")], 1_700_000_010);
+        let mut payouts_map = HashMap::new();
+        payouts_map.insert(1u64, vec![("alice".to_string(), 100u64, "small".to_string())]);
+        db.rebuild_tx_index(&[g, b1], &payouts_map).unwrap();
+        let records = db.get_transactions_for_address("alice", 0, 10).unwrap();
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].sender, "lottery");
+    }
+
+    // ── apply_reorg_incremental ───────────────────────────────────────────────
+
+    #[test]
+    fn apply_reorg_removes_old_block_tx_entries() {
+        let db = db();
+        let g = genesis();
+        let old_b1 = next_block(&g, vec![user_tx("alice", "bob", 10, 2, 1)], 1_700_000_010);
+        db.save_applied_block(&old_b1, &[], &[]).unwrap();
+        let new_b1 = next_block(&g, vec![coinbase("carol")], 1_700_000_015);
+        db.apply_reorg_incremental(&[old_b1], &[new_b1], &[], &HashMap::new()).unwrap();
+        assert!(db.get_transactions_for_address("alice", 0, 10).unwrap().is_empty());
+        assert!(db.get_transactions_for_address("bob", 0, 10).unwrap().is_empty());
+        assert_eq!(db.get_transactions_for_address("carol", 0, 10).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn apply_reorg_clears_displaced_confirmed_signature() {
+        let db = db();
+        let g = genesis();
+        let t = user_tx("alice", "bob", 10, 2, 99);
+        let old_b1 = next_block(&g, vec![t.clone()], 1_700_000_010);
+        db.save_applied_block(&old_b1, &[], &[]).unwrap();
+        assert!(db.is_confirmed_signature(&t.signature).unwrap());
+        let new_b1 = next_block(&g, vec![coinbase("carol")], 1_700_000_015);
+        db.apply_reorg_incremental(&[old_b1], &[new_b1], &[], &HashMap::new()).unwrap();
+        assert!(!db.is_confirmed_signature(&t.signature).unwrap());
+    }
+
+    #[test]
+    fn apply_reorg_removes_displaced_lottery_payout() {
+        let db = db();
+        let g = genesis();
+        let b1 = next_block(&g, vec![coinbase("m")], 1_700_000_010);
+        let old_payouts = vec![("alice".to_string(), 500u64, "jackpot".to_string())];
+        db.save_applied_block(&b1, &[], &old_payouts).unwrap();
+        let new_b1 = next_block(&g, vec![coinbase("m")], 1_700_000_015);
+        db.apply_reorg_incremental(&[b1], &[new_b1], &[], &HashMap::new()).unwrap();
+        assert!(db.get_transactions_for_address("alice", 0, 10).unwrap().is_empty());
+        assert!(db.get_lottery_payouts_range(1, 1).unwrap().is_empty());
+    }
+
+    #[test]
+    fn apply_reorg_adds_new_lottery_payout() {
+        let db = db();
+        let g = genesis();
+        let old_b1 = next_block(&g, vec![coinbase("m")], 1_700_000_010);
+        db.save_applied_block(&old_b1, &[], &[]).unwrap();
+        let new_b1 = next_block(&g, vec![coinbase("m")], 1_700_000_015);
+        let mut new_payouts = HashMap::new();
+        new_payouts.insert(1u64, vec![("bob".to_string(), 200u64, "medium".to_string())]);
+        db.apply_reorg_incremental(&[old_b1], &[new_b1], &[], &new_payouts).unwrap();
+        let records = db.get_transactions_for_address("bob", 0, 10).unwrap();
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].sender, "lottery");
+    }
+
+    #[test]
+    fn apply_reorg_replaces_tickets() {
+        let db = db();
+        let g = genesis();
+        let b1 = next_block(&g, vec![coinbase("m")], 1_700_000_010);
+        db.save_applied_block(&b1, &[ticket("old_miner", 1)], &[]).unwrap();
+        let new_b1 = next_block(&g, vec![coinbase("m2")], 1_700_000_015);
+        db.apply_reorg_incremental(&[b1], &[new_b1], &[ticket("new_miner", 2)], &HashMap::new()).unwrap();
+        let loaded = db.load_tickets().unwrap();
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded[0].miner, "new_miner");
+    }
+
+    // ── rebuild_indices_with_tickets ──────────────────────────────────────────
+
+    #[test]
+    fn rebuild_indices_with_tickets_repopulates_from_stored_blocks() {
+        let db = db();
+        let g = genesis();
+        let t = user_tx("alice", "bob", 10, 2, 11);
+        let b1 = next_block(&g, vec![t.clone()], 1_700_000_010);
+        db.save_block_indexed(&g).unwrap();
+        db.save_block_indexed(&b1).unwrap();
+        db.rebuild_indices_with_tickets(&[ticket("miner", 1)], &HashMap::new()).unwrap();
+        assert_eq!(db.get_transactions_for_address("alice", 0, 10).unwrap().len(), 1);
+        assert_eq!(db.get_transactions_for_address("bob", 0, 10).unwrap().len(), 1);
+        assert!(db.is_confirmed_signature(&t.signature).unwrap());
+        let tickets = db.load_tickets().unwrap();
+        assert_eq!(tickets.len(), 1);
+        assert_eq!(tickets[0].miner, "miner");
+    }
+
+    #[test]
+    fn rebuild_indices_with_tickets_includes_lottery_payouts() {
+        let db = db();
+        let g = genesis();
+        let b1 = next_block(&g, vec![coinbase("m")], 1_700_000_010);
+        db.save_block_indexed(&g).unwrap();
+        db.save_block_indexed(&b1).unwrap();
+        let mut payouts = HashMap::new();
+        payouts.insert(1u64, vec![("alice".to_string(), 100u64, "small".to_string())]);
+        db.rebuild_indices_with_tickets(&[], &payouts).unwrap();
+        let records = db.get_transactions_for_address("alice", 0, 10).unwrap();
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].sender, "lottery");
+    }
+
+    // ── Lottery payout queries ────────────────────────────────────────────────
+
+    #[test]
+    fn get_lottery_payouts_range_returns_matching_entries() {
+        let db = db();
+        let g = genesis();
+        let b1 = next_block(&g, vec![coinbase("m")], 1_700_000_010);
+        let b2 = next_block(&b1, vec![coinbase("m")], 1_700_000_020);
+        db.save_applied_block(&b1, &[], &[("a".to_string(), 100u64, "small".to_string())]).unwrap();
+        db.save_applied_block(&b2, &[], &[("b".to_string(), 200u64, "medium".to_string())]).unwrap();
+        let map = db.get_lottery_payouts_range(1, 2).unwrap();
+        assert_eq!(map.len(), 2);
+        assert!(map.contains_key(&1));
+        assert!(map.contains_key(&2));
+    }
+
+    #[test]
+    fn get_lottery_payouts_range_empty_when_no_payouts() {
+        let db = db();
+        assert!(db.get_lottery_payouts_range(0, 10).unwrap().is_empty());
+    }
+
+    #[test]
+    fn get_recent_lottery_payouts_no_filter_returns_all() {
+        let db = db();
+        let g = genesis();
+        let b1 = next_block(&g, vec![coinbase("m")], 1_700_000_010);
+        let payouts = vec![
+            ("alice".to_string(), 100u64, "small".to_string()),
+            ("bob".to_string(), 500u64, "jackpot".to_string()),
+        ];
+        db.save_applied_block(&b1, &[], &payouts).unwrap();
+        assert_eq!(db.get_recent_lottery_payouts(None, 10).unwrap().len(), 2);
+    }
+
+    #[test]
+    fn get_recent_lottery_payouts_filters_by_tier() {
+        let db = db();
+        let g = genesis();
+        let b1 = next_block(&g, vec![coinbase("m")], 1_700_000_010);
+        let payouts = vec![
+            ("alice".to_string(), 100u64, "small".to_string()),
+            ("bob".to_string(), 500u64, "jackpot".to_string()),
+        ];
+        db.save_applied_block(&b1, &[], &payouts).unwrap();
+        let jackpots = db.get_recent_lottery_payouts(Some("jackpot"), 10).unwrap();
+        assert_eq!(jackpots.len(), 1);
+        assert_eq!(jackpots[0].receiver, "bob");
+        assert_eq!(jackpots[0].tier, "jackpot");
+    }
+
+    #[test]
+    fn get_recent_lottery_payouts_respects_limit() {
+        let db = db();
+        let g = genesis();
+        let b1 = next_block(&g, vec![coinbase("m")], 1_700_000_010);
+        let payouts = vec![
+            ("a".to_string(), 10u64, "small".to_string()),
+            ("b".to_string(), 20u64, "small".to_string()),
+            ("c".to_string(), 30u64, "small".to_string()),
+        ];
+        db.save_applied_block(&b1, &[], &payouts).unwrap();
+        assert_eq!(db.get_recent_lottery_payouts(None, 2).unwrap().len(), 2);
+    }
+
+    #[test]
+    fn get_recent_lottery_payouts_includes_block_timestamp() {
+        let db = db();
+        let g = genesis();
+        let b1 = next_block(&g, vec![coinbase("m")], 1_700_000_042);
+        db.save_applied_block(&b1, &[], &[("alice".to_string(), 100u64, "small".to_string())]).unwrap();
+        let results = db.get_recent_lottery_payouts(None, 1).unwrap();
+        assert_eq!(results[0].block_timestamp, Some(1_700_000_042));
+    }
+
+    #[test]
+    fn get_recent_lottery_payouts_empty_when_none() {
+        assert!(db().get_recent_lottery_payouts(None, 10).unwrap().is_empty());
+    }
+
+    // ── scan_lottery_payout_totals ────────────────────────────────────────────
+
+    #[test]
+    fn scan_lottery_payout_totals_empty_db() {
+        assert!(db().scan_lottery_payout_totals().unwrap().is_empty());
+    }
+
+    #[test]
+    fn scan_lottery_payout_totals_sums_per_tier() {
+        let db = db();
+        let g = genesis();
+        let b1 = next_block(&g, vec![coinbase("m")], 1_700_000_010);
+        let b2 = next_block(&b1, vec![coinbase("m")], 1_700_000_020);
+        db.save_applied_block(&b1, &[], &[("a".to_string(), 100u64, "small".to_string())]).unwrap();
+        db.save_applied_block(&b2, &[], &[
+            ("b".to_string(), 200u64, "small".to_string()),
+            ("c".to_string(), 500u64, "jackpot".to_string()),
+        ]).unwrap();
+        let totals = db.scan_lottery_payout_totals().unwrap();
+        assert_eq!(totals["small"], (2, 300));
+        assert_eq!(totals["jackpot"], (1, 500));
+    }
+
+    // ── Confirmed-signature log ───────────────────────────────────────────────
+
+    #[test]
+    fn is_confirmed_signature_false_for_unknown() {
+        assert!(!db().is_confirmed_signature(&[1, 2, 3]).unwrap());
+    }
+
+    // ── Peers ─────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn save_and_load_peers() {
+        let db = db();
+        db.save_peer("http://node1:3000").unwrap();
+        db.save_peer("http://node2:3000").unwrap();
+        let peers = db.load_peers().unwrap();
+        assert_eq!(peers.len(), 2);
+        assert!(peers.contains(&"http://node1:3000".to_string()));
+    }
+
+    #[test]
+    fn save_peer_is_idempotent() {
+        let db = db();
+        db.save_peer("http://node1:3000").unwrap();
+        db.save_peer("http://node1:3000").unwrap();
+        assert_eq!(db.load_peers().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn delete_peer_removes_entry() {
+        let db = db();
+        db.save_peer("http://node1:3000").unwrap();
+        db.save_peer("http://node2:3000").unwrap();
+        db.delete_peer("http://node1:3000").unwrap();
+        let peers = db.load_peers().unwrap();
+        assert_eq!(peers.len(), 1);
+        assert!(!peers.contains(&"http://node1:3000".to_string()));
+    }
+
+    #[test]
+    fn delete_peer_noop_for_unknown() {
+        db().delete_peer("http://nobody:3000").unwrap();
+    }
+
+    #[test]
+    fn load_peers_empty_db() {
+        assert!(db().load_peers().unwrap().is_empty());
+    }
+
+    // ── Mempool persistence ───────────────────────────────────────────────────
+
+    #[test]
+    fn save_and_load_mempool_tx() {
+        let db = db();
+        let t = user_tx("alice", "bob", 10, 2, 77);
+        db.save_mempool_tx(&t.signature, &t, 5).unwrap();
+        let loaded = db.load_mempool().unwrap();
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded[0].0.amount, 10);
+        assert_eq!(loaded[0].1, 5);
+    }
+
+    #[test]
+    fn remove_mempool_txs_removes_specified_entries() {
+        let db = db();
+        let t1 = user_tx("alice", "bob", 10, 2, 1);
+        let t2 = user_tx("carol", "dave", 20, 2, 2);
+        db.save_mempool_tx(&t1.signature, &t1, 0).unwrap();
+        db.save_mempool_tx(&t2.signature, &t2, 0).unwrap();
+        db.remove_mempool_txs(&[t1.signature.clone()]).unwrap();
+        let loaded = db.load_mempool().unwrap();
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded[0].0.amount, 20);
+    }
+
+    #[test]
+    fn remove_mempool_txs_empty_slice_is_noop() {
+        let db = db();
+        let t = user_tx("alice", "bob", 10, 2, 1);
+        db.save_mempool_tx(&t.signature, &t, 0).unwrap();
+        db.remove_mempool_txs(&[]).unwrap();
+        assert_eq!(db.load_mempool().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn load_mempool_empty_db() {
+        assert!(db().load_mempool().unwrap().is_empty());
+    }
+
+    // ── Checkpoint snapshots ──────────────────────────────────────────────────
+
+    #[test]
+    fn save_and_load_checkpoint() {
+        let db = db();
+        db.save_checkpoint(100, b"snapshot_data").unwrap();
+        assert_eq!(db.load_checkpoint(100).unwrap(), Some(b"snapshot_data".to_vec()));
+    }
+
+    #[test]
+    fn load_checkpoint_missing_returns_none() {
+        assert!(db().load_checkpoint(999).unwrap().is_none());
+    }
+
+    #[test]
+    fn load_latest_checkpoint_returns_highest() {
+        let db = db();
+        db.save_checkpoint(100, b"first").unwrap();
+        db.save_checkpoint(200, b"second").unwrap();
+        db.save_checkpoint(150, b"middle").unwrap();
+        let (height, data) = db.load_latest_checkpoint().unwrap().unwrap();
+        assert_eq!(height, 200);
+        assert_eq!(data, b"second");
+    }
+
+    #[test]
+    fn load_latest_checkpoint_empty_returns_none() {
+        assert!(db().load_latest_checkpoint().unwrap().is_none());
+    }
+
+    #[test]
+    fn delete_checkpoints_from_removes_at_and_after() {
+        let db = db();
+        db.save_checkpoint(100, b"a").unwrap();
+        db.save_checkpoint(200, b"b").unwrap();
+        db.save_checkpoint(300, b"c").unwrap();
+        db.delete_checkpoints_from(200).unwrap();
+        assert!(db.load_checkpoint(100).unwrap().is_some());
+        assert!(db.load_checkpoint(200).unwrap().is_none());
+        assert!(db.load_checkpoint(300).unwrap().is_none());
+    }
+
+    #[test]
+    fn delete_checkpoints_from_noop_when_none_qualify() {
+        let db = db();
+        db.save_checkpoint(100, b"a").unwrap();
+        db.delete_checkpoints_from(500).unwrap();
+        assert!(db.load_checkpoint(100).unwrap().is_some());
+    }
+
+    // ── scan_fee_totals ───────────────────────────────────────────────────────
+
+    #[test]
+    fn scan_fee_totals_empty_db() {
+        let (total, miner_share) = db().scan_fee_totals().unwrap();
+        assert_eq!(total, 0);
+        assert_eq!(miner_share, 0);
+    }
+
+    #[test]
+    fn scan_fee_totals_sums_non_coinbase_fees() {
+        let db = db();
+        let g = genesis();
+        // b1: fee=10; b2: fees=4+6=10 → total=20, miner_share=5+2+3=10
+        let b1 = next_block(&g, vec![user_tx("alice", "bob", 100, 10, 1)], 1_700_000_010);
+        let b2 = next_block(&b1, vec![
+            user_tx("carol", "dave", 50, 4, 2),
+            user_tx("eve", "frank", 30, 6, 3),
+        ], 1_700_000_020);
+        db.save_block_indexed(&g).unwrap();
+        db.save_block_indexed(&b1).unwrap();
+        db.save_block_indexed(&b2).unwrap();
+        let (total, miner_share) = db.scan_fee_totals().unwrap();
+        assert_eq!(total, 20);
+        assert_eq!(miner_share, 10);
+    }
+
+    #[test]
+    fn scan_fee_totals_ignores_coinbase() {
+        let db = db();
+        let g = genesis();
+        db.save_block_indexed(&g).unwrap();
+        let (total, _) = db.scan_fee_totals().unwrap();
+        assert_eq!(total, 0);
+    }
+}
