@@ -976,7 +976,7 @@ impl Blockchain {
                 }
                 // Snapshot derived state every CHECKPOINT_INTERVAL blocks so future
                 // restarts can skip the O(N) full-chain replay.
-                if block.index > 0 && block.index % CHECKPOINT_INTERVAL == 0 {
+                if block.index > 0 && block.index.is_multiple_of(CHECKPOINT_INTERVAL) {
                     match bincode::serialize(&self.snapshot()) {
                         Ok(data) => {
                             if let Err(e) = db.save_checkpoint(block.index, &data) {

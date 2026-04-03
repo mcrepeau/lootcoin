@@ -1019,16 +1019,13 @@ async fn metrics_handler(State(state): State<AppState>) -> impl axum::response::
 pub async fn get_snapshots_handler(State(state): State<AppState>) -> Json<Vec<SnapshotInfo>> {
     let mut available = Vec::new();
     for &(height, trusted_hash) in TRUSTED_CHECKPOINTS {
-        match state.db.load_checkpoint(height) {
-            Ok(Some(data)) => {
-                if let Ok(cp) = bincode::deserialize::<CheckpointState>(&data) {
-                    let local_hash = hex::encode(&cp.block_hash);
-                    if local_hash == trusted_hash.trim_start_matches("0x") {
-                        available.push(SnapshotInfo { height, block_hash_hex: local_hash });
-                    }
+        if let Ok(Some(data)) = state.db.load_checkpoint(height) {
+            if let Ok(cp) = bincode::deserialize::<CheckpointState>(&data) {
+                let local_hash = hex::encode(&cp.block_hash);
+                if local_hash == trusted_hash.trim_start_matches("0x") {
+                    available.push(SnapshotInfo { height, block_hash_hex: local_hash });
                 }
             }
-            _ => {}
         }
     }
     Json(available)

@@ -774,12 +774,13 @@ impl Db {
 
     /// Return the highest stored checkpoint as `(height, raw_bytes)`, or `None`
     /// if no checkpoints exist yet.
+    #[allow(clippy::type_complexity)]
     pub fn load_latest_checkpoint(
         &self,
     ) -> Result<Option<(u64, Vec<u8>)>, Box<dyn std::error::Error>> {
         let rtxn = self.db.begin_read()?;
         let table = rtxn.open_table(CHECKPOINTS)?;
-        match table.range::<u64>(..)?.rev().next() {
+        match table.range::<u64>(..)?.next_back() {
             Some(Ok((k, v))) => Ok(Some((k.value(), v.value().to_vec()))),
             Some(Err(e)) => Err(e.into()),
             None => Ok(None),

@@ -349,8 +349,8 @@ fn cmd_history(
     }
 
     println!(
-        "{:<8}  {:<7}  {:>12}  {:>5}  {}",
-        "BLOCK", "TYPE", "AMOUNT", "FEE", "COUNTERPART"
+        "{:<8}  {:<7}  {:>12}  {:>5}  COUNTERPART",
+        "BLOCK", "TYPE", "AMOUNT", "FEE"
     );
     println!("{}", "─".repeat(72));
 
