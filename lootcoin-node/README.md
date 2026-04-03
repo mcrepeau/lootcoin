@@ -51,6 +51,42 @@ Difficulty is expressed in **fractional bits** (e.g. `26.47`). A 0.65% deviation
 
 ---
 
+### Checkpoints and fast sync
+
+As the chain grows, replaying every block from genesis on each restart becomes expensive. Lootcoin avoids this with a two-layer checkpoint system.
+
+#### Local checkpoints
+
+Every 1,000 blocks the node snapshots its full derived state — balances, pot, chain work, difficulty, pending lottery tickets — and writes it to the local database. On restart, the node loads the most recent snapshot and replays only the blocks that followed it, reducing startup time from O(chain length) to O(tail length).
+
+The snapshot's block hash is verified against the live database on every load. If it doesn't match (e.g. after a deep reorg), the snapshot is discarded and the node falls back to a full replay.
+
+#### Peer snapshot sync
+
+A fresh node with no local history can bootstrap from a peer instead of replaying the entire chain. The trust model works as follows:
+
+**Trust anchors** — `src/checkpoints.rs` contains a hardcoded list of `(height, block_hash)` pairs, attested by the chain operator. These are compiled into the binary and cannot be changed at runtime, the same model Bitcoin uses.
+
+**Sync flow** — on first boot, the node queries every configured peer for their available snapshots (`GET /snapshots`). It finds the highest height where the peer's advertised hash matches a hardcoded trust anchor, downloads the full state payload (`GET /snapshot/{height}`), verifies the hash a second time, and applies it. Blocks from that height onward are then fetched normally via peer sync.
+
+**Archive nodes** — set `ARCHIVE=1` to skip peer snapshot sync entirely and replay from genesis. Archive nodes serve the complete transaction history for any address, including history that predates any checkpoint.
+
+**`history_start`** — the `/node/info` endpoint exposes the lowest block height for which this node has complete data. `0` means full archive; any other value means the node synced from a snapshot and cannot serve history before that height.
+
+#### Adding a trust anchor
+
+Once a block height is considered irreversible, add it to `src/checkpoints.rs`:
+
+```rust
+pub const TRUSTED_CHECKPOINTS: &[(u64, &str)] = &[
+    (100_000, "0000a3f1..."),
+];
+```
+
+Rebuild and redeploy. Nodes running this binary will now advertise and serve a snapshot at that height, and fresh peers will use it automatically.
+
+---
+
 ### Hash function
 
 Lootcoin uses [CubeHash-256](https://en.wikipedia.org/wiki/CubeHash) instead of SHA-256. CubeHash is a NIST SHA-3 finalist designed to be simple, parallelisable, and resistant to length-extension attacks.
@@ -166,6 +202,43 @@ Submit a mined block (JSON-encoded `Block`). Returns `200` on acceptance, `400` 
 
 Submit a signed transaction. Returns `200` on acceptance, `400` on rejection.
 
+**GET /snapshots**
+
+Lists checkpoint heights this node can serve as snapshots. Only heights that appear in the hardcoded trust anchors (`src/checkpoints.rs`) and are available in the local database are advertised.
+
+```json
+[
+  {"height": 100000, "block_hash_hex": "0000a3f1..."}
+]
+```
+
+**GET /snapshot/{height}**
+
+Returns the full snapshot payload for a trusted checkpoint height. Used by fresh nodes to bootstrap without replaying from genesis. Returns `404` if the height is not a trusted checkpoint or has not yet been reached.
+
+```json
+{
+  "height": 100000,
+  "block_hash_hex": "0000a3f1...",
+  "balances": {"loot1...": 50000},
+  "pot": 98750000,
+  "chain_work_hex": "00000000000000000000000000057a3c",
+  "current_difficulty": 26.47,
+  "asert_anchor": [1, 1748000060, 25.0],
+  "tickets": [{"miner": "loot1...", "created_height": 99890}]
+}
+```
+
+**GET /chain/block-hash/{height}**
+
+Returns the hex-encoded block hash at a given height. Intended for chain operators who need to add a new entry to `src/checkpoints.rs`.
+
+```json
+{"height": 1000, "block_hash_hex": "0000a3f1..."}
+```
+
+Returns `404` if the height has not yet been reached or is not available on this node.
+
 **GET /peers**
 
 Known peer URLs.
@@ -198,6 +271,7 @@ On first boot the node creates `./data/` and initialises the database. Subsequen
 | `PORT` | `3000` | HTTP listen port |
 | `PEERS` | _(none)_ | Comma-separated bootstrap peer URLs |
 | `NODE_URL` | _(none)_ | This node's public URL, announced to peers |
+| `ARCHIVE` | `0` | Set to `1` to force a full replay from genesis, skipping peer snapshot sync. Use this to run a complete archive node |
 | `RUST_LOG` | `info` | Log filter (e.g. `debug`, `lootcoin_node=trace`) |
 
 ---

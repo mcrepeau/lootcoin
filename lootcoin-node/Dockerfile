@@ -32,10 +32,14 @@ VOLUME ["/app/data"]
 # PORT          – TCP port the API listens on (default: 3000)
 # PEERS         – comma-separated list of peer URLs to seed from on startup
 # NODE_URL      – this node's publicly reachable URL; used for self-announcement
+# ARCHIVE       – set to 1 to force full genesis replay, skipping peer snapshot sync
 # RUST_LOG      – tracing log filter (default: info)
 ENV PORT=3000
 ENV RUST_LOG=info
 
 EXPOSE 3000
+
+HEALTHCHECK --interval=5s --timeout=3s --retries=12 --start-period=10s \
+    CMD ["/usr/local/bin/lootcoin-node", "health"]
 
 CMD ["lootcoin-node"]

@@ -1,5 +1,6 @@
 mod api;
 mod blockchain;
+mod checkpoints;
 mod db;
 mod gossip;
 mod loot_ticket;
@@ -210,6 +211,172 @@ async fn announce_self(peers: &[String], my_url: &str) {
     }
 }
 
+/// Query peers for available snapshots and download the highest one that
+/// matches a hardcoded trusted checkpoint. Returns the restored state and
+/// the checkpoint block (needed to seed the in-memory window) on success.
+///
+/// Side effects on success: saves the checkpoint block and the serialized
+/// CheckpointState to the local DB so the next restart uses the fast path.
+async fn fetch_peer_snapshot(
+    peers: &[String],
+    db: &db::Db,
+) -> Option<(u64, blockchain::CheckpointState, block::Block)> {
+    use api::SnapshotPayload;
+    use checkpoints::TRUSTED_CHECKPOINTS;
+
+    if TRUSTED_CHECKPOINTS.is_empty() || peers.is_empty() {
+        return None;
+    }
+
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+        .expect("Failed to build HTTP client");
+
+    #[derive(serde::Deserialize)]
+    struct SnapshotInfo {
+        height: u64,
+        block_hash_hex: String,
+    }
+
+    // Gather every (peer, height, hash) triple that matches a trusted checkpoint.
+    let mut candidates: Vec<(String, u64, String)> = Vec::new();
+    for peer in peers {
+        match client.get(format!("{}/snapshots", peer)).send().await {
+            Ok(resp) => match resp.json::<Vec<SnapshotInfo>>().await {
+                Ok(list) => {
+                    for s in list {
+                        let trusted = TRUSTED_CHECKPOINTS.iter().find(|(h, _)| *h == s.height);
+                        if let Some((_, trusted_hash)) = trusted {
+                            if s.block_hash_hex.trim_start_matches("0x")
+                                == trusted_hash.trim_start_matches("0x")
+                            {
+                                candidates.push((peer.clone(), s.height, s.block_hash_hex));
+                            }
+                        }
+                    }
+                }
+                Err(e) => warn!("Could not parse snapshots from {}: {}", peer, e),
+            },
+            Err(e) => warn!("Could not reach {} for snapshots: {}", peer, e),
+        }
+    }
+
+    if candidates.is_empty() {
+        debug!("No trusted snapshots found from peers");
+        return None;
+    }
+
+    // Prefer the highest checkpoint so we skip the most replay.
+    candidates.sort_by_key(|(_, h, _)| std::cmp::Reverse(*h));
+
+    for (peer, height, expected_hash) in candidates {
+        info!("Attempting snapshot sync from {} at height {}", peer, height);
+
+        // Download the snapshot payload.
+        let payload: SnapshotPayload = match client
+            .get(format!("{}/snapshot/{}", peer, height))
+            .send()
+            .await
+        {
+            Ok(resp) => match resp.json::<SnapshotPayload>().await {
+                Ok(p) => p,
+                Err(e) => {
+                    warn!("Failed to parse snapshot from {} at {}: {}", peer, height, e);
+                    continue;
+                }
+            },
+            Err(e) => {
+                warn!("Failed to download snapshot from {} at {}: {}", peer, height, e);
+                continue;
+            }
+        };
+
+        // Verify the payload hash against our trusted anchor.
+        let expected = expected_hash.trim_start_matches("0x");
+        if payload.block_hash_hex.trim_start_matches("0x") != expected {
+            warn!("Snapshot from {} has wrong block hash — skipping", peer);
+            continue;
+        }
+
+        // Download the checkpoint block so we can seed the in-memory window.
+        let cp_blocks: Vec<block::Block> = match client
+            .get(format!("{}/blocks?from={}&limit=1", peer, height))
+            .send()
+            .await
+        {
+            Ok(resp) => match resp.json::<Vec<block::Block>>().await {
+                Ok(b) => b,
+                Err(e) => {
+                    warn!("Failed to parse checkpoint block from {}: {}", peer, e);
+                    continue;
+                }
+            },
+            Err(e) => {
+                warn!("Failed to download checkpoint block from {}: {}", peer, e);
+                continue;
+            }
+        };
+
+        let cp_block = match cp_blocks.into_iter().next() {
+            Some(b) => b,
+            None => {
+                warn!("No block at height {} from {}", height, peer);
+                continue;
+            }
+        };
+
+        // Final integrity check: the block's own hash must match the snapshot.
+        if hex::encode(&cp_block.hash) != expected {
+            warn!("Checkpoint block hash mismatch from {} — skipping", peer);
+            continue;
+        }
+
+        // Parse chain_work from hex string.
+        let chain_work = u128::from_str_radix(
+            payload.chain_work_hex.trim_start_matches("0x"),
+            16,
+        )
+        .unwrap_or(0);
+
+        let state = blockchain::CheckpointState {
+            balances: payload.balances,
+            pot: payload.pot,
+            chain_work,
+            block_hash: cp_block.hash.clone(),
+            current_difficulty: payload.current_difficulty,
+            asert_anchor: payload.asert_anchor,
+            tickets: payload.tickets,
+        };
+
+        // Persist block and snapshot so the next restart uses the fast path.
+        if let Err(e) = db.save_block_indexed(&cp_block) {
+            warn!("Failed to persist checkpoint block: {}", e);
+            continue;
+        }
+        match bincode::serialize(&state) {
+            Ok(data) => {
+                if let Err(e) = db.save_checkpoint(height, &data) {
+                    warn!("Failed to persist local checkpoint: {}", e);
+                    continue;
+                }
+            }
+            Err(e) => {
+                warn!("Failed to serialize checkpoint state: {}", e);
+                continue;
+            }
+        }
+
+        info!(
+            "Snapshot sync complete: height={} from {}",
+            height, peer
+        );
+        return Some((height, state, cp_block));
+    }
+
+    None
+}
+
 /// CubeHash-256 digest of the genesis recipient's public key (hex-encoded).
 /// The actual address is the bech32m encoding of these bytes, derived at
 /// startup via `lootcoin_core::wallet::encode_address`.  The secret key
@@ -249,8 +416,21 @@ async fn shutdown_signal() {
     info!("Shutdown signal received — stopping server");
 }
 
+/// Path written once the API listener is bound. Used by the Docker HEALTHCHECK.
+const HEALTHY_FILE: &str = "/app/healthy";
+
 #[tokio::main]
 async fn main() {
+    // Health-check subcommand: exit 0 if the ready file exists, 1 otherwise.
+    // Invoked by the Docker HEALTHCHECK — no logging needed.
+    if std::env::args().nth(1).as_deref() == Some("health") {
+        std::process::exit(if std::path::Path::new(HEALTHY_FILE).exists() { 0 } else { 1 });
+    }
+
+    // Remove any stale ready file from a previous run so health checks don't
+    // pass before this boot's listener is actually bound.
+    let _ = std::fs::remove_file(HEALTHY_FILE);
+
     let _ = fmt()
         .with_env_filter(
             EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
@@ -272,45 +452,90 @@ async fn main() {
         .load_latest_checkpoint()
         .expect("Failed to read checkpoints");
 
+    // Pre-build the env peer list — needed for peer snapshot sync on fresh nodes
+    // before the full peer list (env + DB) is assembled later in the startup sequence.
+    let env_peers: Vec<String> = std::env::var("PEERS")
+        .unwrap_or_default()
+        .split(',')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .collect();
+
     // true  → came from a checkpoint; TX index is already up to date in DB.
     // false → did a full in-memory replay; TX index must be rebuilt from scratch.
     let used_checkpoint: bool;
+    // Lowest block height for which this node has data. 0 = full archive.
+    // Set to the snapshot height when the node bootstraps from a peer snapshot.
+    let history_start: u64;
 
     let mut chain = if stored_blocks.is_empty() {
-        // Fresh start — create the deterministic genesis block.
-        // All nodes use the same fixed address and timestamp so they produce an
-        // identical genesis block and can interoperate without manual coordination.
-        info!("No history found. Initializing new chain with Genesis.");
-
-        let genesis_txs = vec![Transaction {
-            sender: String::new(),
-            receiver: GENESIS_ADDRESS.parse().unwrap(),
-            amount: GENESIS_WALLET_AMOUNT,
-            fee: 0,
-            nonce: 0,
-            public_key: [0u8; 32],
-            signature: vec![],
-        }];
-        let genesis = block::Block {
-            index: 0,
-            previous_hash: vec![0u8; 32],
-            timestamp: GENESIS_TIMESTAMP,
-            nonce: 0,
-            tx_root: block::Block::compute_tx_root(&genesis_txs),
-            transactions: genesis_txs,
-            hash: vec![],
+        // Fresh node — try to fast-bootstrap from a peer snapshot before
+        // falling back to the full genesis → replay path.
+        // Set ARCHIVE=1 to force a full replay from genesis instead.
+        let force_archive = std::env::var("ARCHIVE").map(|v| v == "1").unwrap_or(false);
+        let snapshot = if force_archive {
+            info!("ARCHIVE=1: skipping peer snapshot sync, replaying from genesis");
+            None
+        } else {
+            fetch_peer_snapshot(&env_peers, &db).await
         };
+        if let Some((snap_height, snap_state, cp_block)) = snapshot {
+            // Snapshot sync succeeded. Use a dummy genesis just to construct
+            // Blockchain (which requires a Block); restore_from_checkpoint will
+            // overwrite every field. genesis_pot is set so deep-reorg replay works.
+            let dummy_genesis = block::Block {
+                index: 0,
+                previous_hash: vec![0u8; 32],
+                timestamp: GENESIS_TIMESTAMP,
+                nonce: 0,
+                tx_root: vec![],
+                transactions: vec![],
+                hash: vec![],
+            };
+            let mut chain = Blockchain::new(dummy_genesis);
+            chain.seed_pot(GENESIS_POT_AMOUNT); // sets genesis_pot; pot is overwritten below
+            chain.restore_from_checkpoint(snap_height, snap_state, cp_block);
+            used_checkpoint = true;
+            history_start = snap_height;
+            chain
+        } else {
+            // No trusted peer snapshot available — create the deterministic genesis block.
+            // All nodes use the same fixed address and timestamp so they produce an
+            // identical genesis block and can interoperate without manual coordination.
+            info!("No history found. Initializing new chain with Genesis.");
 
-        info!("Genesis address:        {}", GENESIS_ADDRESS);
-        info!("Genesis wallet coins:   {}", GENESIS_WALLET_AMOUNT);
-        info!("Lottery pot seeded:     {}", GENESIS_POT_AMOUNT);
+            let genesis_txs = vec![Transaction {
+                sender: String::new(),
+                receiver: GENESIS_ADDRESS.parse().unwrap(),
+                amount: GENESIS_WALLET_AMOUNT,
+                fee: 0,
+                nonce: 0,
+                public_key: [0u8; 32],
+                signature: vec![],
+            }];
+            let genesis = block::Block {
+                index: 0,
+                previous_hash: vec![0u8; 32],
+                timestamp: GENESIS_TIMESTAMP,
+                nonce: 0,
+                tx_root: block::Block::compute_tx_root(&genesis_txs),
+                transactions: genesis_txs,
+                hash: vec![],
+            };
 
-        db.save_block_indexed(&genesis)
-            .expect("Failed to persist genesis");
-        let mut chain = Blockchain::new(genesis);
-        chain.seed_pot(GENESIS_POT_AMOUNT);
-        used_checkpoint = false;
-        chain
+            info!("Genesis address:        {}", GENESIS_ADDRESS);
+            info!("Genesis wallet coins:   {}", GENESIS_WALLET_AMOUNT);
+            info!("Lottery pot seeded:     {}", GENESIS_POT_AMOUNT);
+
+            db.save_block_indexed(&genesis)
+                .expect("Failed to persist genesis");
+            let mut chain = Blockchain::new(genesis);
+            chain.seed_pot(GENESIS_POT_AMOUNT);
+            used_checkpoint = false;
+            history_start = 0;
+            chain
+        }
     } else if let Some((cp_height, cp_data)) = maybe_checkpoint {
         // Checkpoint found — deserialize and validate it against the BLOCKS table.
         let state: blockchain::CheckpointState = bincode::deserialize(&cp_data)
@@ -349,6 +574,7 @@ async fn main() {
                 chain.get_height()
             );
             used_checkpoint = true;
+            history_start = 0; // archive node — has full history in BLOCKS table
             chain
         } else {
             // Hash mismatch: this checkpoint is from a reorged (displaced) chain.
@@ -369,6 +595,7 @@ async fn main() {
             }
             info!("Blockchain state rebuilt. Height: {}", chain.get_height());
             used_checkpoint = false;
+            history_start = 0;
             chain
         }
     } else {
@@ -385,6 +612,7 @@ async fn main() {
         }
         info!("Blockchain state rebuilt. Height: {}", chain.get_height());
         used_checkpoint = false;
+        history_start = 0;
         chain
     };
 
@@ -510,9 +738,7 @@ async fn main() {
         shutdown_rx,
         sse_subscribers: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         metrics,
-        // All nodes currently replay from genesis — set to 0 (archive).
-        // Will be set to the checkpoint height once snapshot sync is implemented.
-        history_start: 0,
+        history_start,
     };
 
     // 9. Subscribe to the SSE event streams of all known peers so we receive
@@ -549,6 +775,7 @@ async fn main() {
     let addr = std::net::SocketAddr::from(([0, 0, 0, 0], port));
     let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
     info!("API listening on http://{}", addr);
+    let _ = std::fs::write(HEALTHY_FILE, b"1");
 
     let app = router(state);
     axum::serve(

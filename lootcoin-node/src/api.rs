@@ -20,20 +20,24 @@ use tower_http::{
 };
 use tracing::{info, warn};
 
-use crate::blockchain::{BlockOutcome, Blockchain};
+use crate::blockchain::{BlockOutcome, Blockchain, CheckpointState};
 use lootcoin_core::block::MAX_BLOCK_TXS;
 use crate::db::Db;
 use crate::gossip::{Gossip, NodeEvent};
+use crate::loot_ticket::LootTicket;
 use crate::mempool::{FeeStats, Mempool};
 use crate::metrics::Metrics;
 use lootcoin_core::{
     block::{meets_difficulty, Block},
     transaction::Transaction,
 };
+use std::collections::HashMap;
 
 /// Maximum number of concurrent SSE subscribers. Prevents memory/CPU exhaustion
 /// from an attacker opening thousands of long-lived event stream connections.
 const MAX_SSE_SUBSCRIBERS: usize = 100;
+
+pub use crate::checkpoints::TRUSTED_CHECKPOINTS;
 
 #[derive(Clone)]
 pub struct AppState {
@@ -111,6 +115,34 @@ pub struct NodeInfoResponse {
     pub history_start: u64,
     /// This node's publicly reachable URL, if configured via NODE_URL.
     pub node_url: Option<String>,
+}
+
+/// Entry in the GET /snapshots list.
+#[derive(Serialize)]
+pub struct SnapshotInfo {
+    pub height: u64,
+    /// Lowercase hex block hash — matches the corresponding TRUSTED_CHECKPOINTS entry.
+    pub block_hash_hex: String,
+}
+
+/// Full snapshot payload returned by GET /snapshot/{height}.
+///
+/// Contains all derived state a bootstrapping node needs to resume from this
+/// height without replaying blocks from genesis. The block hash is verified
+/// against TRUSTED_CHECKPOINTS before the payload is accepted.
+///
+/// `chain_work` is hex-encoded (u128 doesn't round-trip through JSON f64).
+#[derive(Serialize, Deserialize)]
+pub struct SnapshotPayload {
+    pub height: u64,
+    pub block_hash_hex: String,
+    pub balances: HashMap<String, u64>,
+    pub pot: u64,
+    pub chain_work_hex: String,
+    pub current_difficulty: f64,
+    /// ASERT anchor: (height, timestamp, difficulty) for block 1.
+    pub asert_anchor: Option<(u64, u64, f64)>,
+    pub tickets: Vec<LootTicket>,
 }
 
 #[derive(Deserialize)]
@@ -977,10 +1009,97 @@ async fn metrics_handler(State(state): State<AppState>) -> impl axum::response::
     )
 }
 
+// ─── Snapshot endpoints ───────────────────────────────────────────────────────
+
+/// GET /snapshots
+///
+/// Lists checkpoint heights this node can serve as snapshots. Only heights
+/// that appear in TRUSTED_CHECKPOINTS and are present in the local DB are
+/// advertised — so the list is always a subset of the hardcoded trust anchors.
+pub async fn get_snapshots_handler(State(state): State<AppState>) -> Json<Vec<SnapshotInfo>> {
+    let mut available = Vec::new();
+    for &(height, trusted_hash) in TRUSTED_CHECKPOINTS {
+        match state.db.load_checkpoint(height) {
+            Ok(Some(data)) => {
+                if let Ok(cp) = bincode::deserialize::<CheckpointState>(&data) {
+                    let local_hash = hex::encode(&cp.block_hash);
+                    if local_hash == trusted_hash.trim_start_matches("0x") {
+                        available.push(SnapshotInfo { height, block_hash_hex: local_hash });
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    Json(available)
+}
+
+/// GET /snapshot/{height}
+///
+/// Returns the full snapshot payload for a trusted checkpoint height.
+/// Returns 404 if the height is not in TRUSTED_CHECKPOINTS or is not yet
+/// available in this node's local DB.
+pub async fn get_snapshot_handler(
+    State(state): State<AppState>,
+    Path(height): Path<u64>,
+) -> Result<Json<SnapshotPayload>, axum::http::StatusCode> {
+    // Only serve heights explicitly listed in the trust anchors.
+    let trusted_hash = TRUSTED_CHECKPOINTS
+        .iter()
+        .find(|(h, _)| *h == height)
+        .map(|(_, hash)| *hash)
+        .ok_or(axum::http::StatusCode::NOT_FOUND)?;
+
+    let data = state
+        .db
+        .load_checkpoint(height)
+        .map_err(|_| axum::http::StatusCode::INTERNAL_SERVER_ERROR)?
+        .ok_or(axum::http::StatusCode::NOT_FOUND)?;
+
+    let cp = bincode::deserialize::<CheckpointState>(&data)
+        .map_err(|_| axum::http::StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    // Sanity-check: local data must still match the trusted hash.
+    let local_hash = hex::encode(&cp.block_hash);
+    if local_hash != trusted_hash.trim_start_matches("0x") {
+        warn!(target: "api", "Checkpoint at {} has unexpected hash — DB may be inconsistent", height);
+        return Err(axum::http::StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    Ok(Json(SnapshotPayload {
+        height,
+        block_hash_hex: local_hash,
+        balances: cp.balances,
+        pot: cp.pot,
+        chain_work_hex: format!("{:032x}", cp.chain_work),
+        current_difficulty: cp.current_difficulty,
+        asert_anchor: cp.asert_anchor,
+        tickets: cp.tickets,
+    }))
+}
+
 // ─── Router ───────────────────────────────────────────────────────────────────
 
 /// Build the application router.
 ///
+/// GET /chain/block-hash/{height}
+///
+/// Returns the hex-encoded block hash at the given height. Intended for
+/// operators who need to add a new entry to TRUSTED_CHECKPOINTS.
+pub async fn block_hash_handler(
+    State(state): State<AppState>,
+    Path(height): Path<u64>,
+) -> Result<Json<serde_json::Value>, axum::http::StatusCode> {
+    let blocks = state
+        .db
+        .get_blocks_range(height, 1)
+        .map_err(|_| axum::http::StatusCode::INTERNAL_SERVER_ERROR)?;
+    match blocks.into_iter().next() {
+        Some(b) => Ok(Json(serde_json::json!({ "height": height, "block_hash_hex": hex::encode(&b.hash) }))),
+        None => Err(axum::http::StatusCode::NOT_FOUND),
+    }
+}
+
 /// Rate limiting is applied only to POST /transactions, POST /transactions/relay,
 /// and POST /peers.  POST /blocks is intentionally exempt: valid blocks require
 /// proof-of-work (natural rate limiter), invalid blocks are rejected cheaply,
@@ -1003,7 +1122,10 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/blocks", get(get_blocks_handler))
         .route("/chain/head", get(chain_head_handler))
+        .route("/chain/block-hash/{height}", get(block_hash_handler))
         .route("/node/info", get(node_info_handler))
+        .route("/snapshots", get(get_snapshots_handler))
+        .route("/snapshot/{height}", get(get_snapshot_handler))
         .route("/peers", get(get_peers_handler))
         .route("/events", get(events_handler))
         .route("/metrics", get(metrics_handler))

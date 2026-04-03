@@ -769,6 +769,20 @@ impl Db {
         Ok(())
     }
 
+    /// Return the raw bincode bytes for a specific checkpoint height, or `None`
+    /// if no checkpoint exists at that height.
+    pub fn load_checkpoint(
+        &self,
+        height: u64,
+    ) -> Result<Option<Vec<u8>>, Box<dyn std::error::Error>> {
+        let rtxn = self.db.begin_read()?;
+        let table = rtxn.open_table(CHECKPOINTS)?;
+        match table.get(&height)? {
+            Some(v) => Ok(Some(v.value().to_vec())),
+            None => Ok(None),
+        }
+    }
+
     /// Return the highest stored checkpoint as `(height, raw_bytes)`, or `None`
     /// if no checkpoints exist yet.
     pub fn load_latest_checkpoint(

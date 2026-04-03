@@ -1,16 +1,49 @@
 services:
-  node:
+  node1:
     build:
       context: .
       dockerfile: lootcoin-node/Dockerfile
     ports:
       - "3001:3000"
     volumes:
-      - node-data:/app/data
+      - node1-data:/app/data
     environment:
       RUST_LOG: info
-      PEERS: ""
-      NODE_URL: "http://node:3000"
+      PEERS: "http://node2:3000,http://node3:3000"
+      NODE_URL: "http://node1:3000"
+  
+  node2:
+    build:
+      context: .
+      dockerfile: lootcoin-node/Dockerfile
+    ports:
+      - "3002:3000"
+    depends_on:
+      node1:
+        condition: service_healthy
+    volumes:
+      - node2-data:/app/data
+    environment:
+      RUST_LOG: info
+      PEERS: "http://node1:3000,http://node3:3000"
+      NODE_URL: "http://node2:3000"
+
+  node3:
+    build:
+      context: .
+      dockerfile: lootcoin-node/Dockerfile
+    ports:
+      - "3003:3000"
+    depends_on:
+      node1:
+        condition: service_healthy
+    volumes:
+      - node3-data:/app/data
+    environment:
+      RUST_LOG: info
+      PEERS: "http://node1:3000,http://node2:3000"
+      NODE_URL: "http://node3:3000"
+      ARCHIVE: 1
 
   web:
     build:
@@ -26,10 +59,11 @@ services:
     ports:
       - "3030:3030"
     depends_on:
-      - node
+      node1:
+        condition: service_healthy
     environment:
       RUST_LOG: info
-      NODE_URL: "http://node:3000"
+      NODE_URL: "http://node1:3000"
       FAUCET_SECRET_KEY: "${FAUCET_SECRET_KEY}"
       DISPENSE_AMOUNT: "500"
       DISPENSE_FEE: "2"
@@ -40,10 +74,11 @@ services:
       context: .
       dockerfile: lootcoin-miner/Dockerfile
     depends_on:
-      - node
+      node1:
+        condition: service_healthy
     environment:
       RUST_LOG: info
-      NODE_URLS: "http://node:3000"
+      NODE_URLS: "http://node1:3000,http://node2:3000,http://node3:3000"
       MINER_ADDRESS: "${MINER_ADDRESS}"
       
   prometheus:
@@ -69,8 +104,10 @@ configs:
         - job_name: lootcoin-node
           static_configs:
             - targets:
-                - node:3000
+                - node1:3000
 
 volumes:
-  node-data:
+  node1-data:
+  node2-data:
+  node3-data:
   prometheus-data:
