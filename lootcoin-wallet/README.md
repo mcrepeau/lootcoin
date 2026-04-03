@@ -193,7 +193,12 @@ const txJson = wallet.sign_transaction(receiverAddress, amount, fee);
 | Entropy | 16 bytes from OS CSPRNG (WebCrypto in browser, OsRng in CLI) |
 | Mnemonic | BIP-39, 12 words |
 | Seed | PBKDF2-HMAC-SHA512, no passphrase, 2048 rounds |
-| Key | First 32 bytes of seed → Ed25519 keypair |
+| Master key | SLIP-0010: HMAC-SHA512(Key=`"ed25519 seed"`, Data=seed) |
+| Derivation path | `m/44'/4103'/0'/0'/0'` — all components hardened (SLIP-0010 ed25519 requirement) |
+| Coin type | 4103 (`0x1007`) — Lootcoin's SLIP-0044 registered coin type |
+| Key | IL (first 32 bytes of final HMAC) → Ed25519 keypair |
 | Address | CubeHash-256(public key) → bech32m (`loot1…`) |
 
 A wallet created with `lc new` and restored with `lc import` using the same phrase always produces the same address.
+
+> **Note for hardware wallet integrators:** use path `m/44'/4103'/0'/0'/0'` with SLIP-0010 ed25519 derivation (all hardened). This is compatible with any SLIP-0010-compliant ed25519 implementation.
