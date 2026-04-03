@@ -91,16 +91,16 @@ async function fetchNetworkStats() {
 }
 
 function updateFeeHint() {
-  const fee = parseInt(byId("fee").value, 10);
+  const fee = Number.parseInt(byId("fee").value, 10);
   const hint = byId("feeHint");
   const presets = document.querySelectorAll(".btn-preset");
 
   // Highlight matching preset
   presets.forEach(btn => {
-    btn.classList.toggle("active", parseInt(btn.dataset.fee, 10) === fee);
+    btn.classList.toggle("active", Number.parseInt(btn.dataset.fee, 10) === fee);
   });
 
-  if (isNaN(fee) || fee < 0) {
+  if (Number.isNaN(fee) || fee < 0) {
     hint.textContent = "";
     hint.className = "fee-hint";
     return;

@@ -159,9 +159,9 @@ export function addressToWordcode(addr) {
     num = (bytes[2] << 8) | bytes[3];
   } else {
     // Legacy hex fallback
-    b0  = parseInt(addr.slice(0, 2), 16);
-    b1  = parseInt(addr.slice(2, 4), 16);
-    num = parseInt(addr.slice(4, 8), 16);
+    b0  = Number.parseInt(addr.slice(0, 2), 16);
+    b1  = Number.parseInt(addr.slice(2, 4), 16);
+    num = Number.parseInt(addr.slice(4, 8), 16);
   }
   return `${ADJECTIVES[b0]}-${NOUNS[b1]}-${String(num).padStart(5, "0")}`;
 }
