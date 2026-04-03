@@ -217,7 +217,7 @@ impl Metrics {
     pub fn record_fees(&self, total_fees: u64, miner_share: u64) {
         self.fees_collected_total.inc_by(total_fees);
         self.fees_to_miners_total.inc_by(miner_share);
-        self.fees_to_pot_total.inc_by(total_fees - miner_share);
+        self.fees_to_pot_total.inc_by(total_fees.saturating_sub(miner_share));
         self.blocks_total.inc();
     }
 
