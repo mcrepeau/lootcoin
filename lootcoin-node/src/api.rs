@@ -1471,15 +1471,6 @@ mod tests {
         let wallet = test_wallet();
         let state = make_state(&wallet);
         // Save 3 blocks each containing a tx to "alice"
-        let mut prev = Block {
-            index: 0,
-            previous_hash: vec![],
-            timestamp: 1_700_000_000,
-            nonce: 0,
-            tx_root: vec![],
-            transactions: vec![],
-            hash: vec![],
-        };
         for i in 0u64..3 {
             let b = Block {
                 index: i,
@@ -1499,7 +1490,6 @@ mod tests {
                 hash: vec![i as u8],
             };
             state.db.save_applied_block(&b, &[], &[]).unwrap();
-            prev = b;
         }
         let body = json_body(
             get_req(state, "/address/alice/transactions?limit=2").await,

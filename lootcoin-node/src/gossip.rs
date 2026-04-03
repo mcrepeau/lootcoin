@@ -293,4 +293,194 @@ mod tests {
                 .await
         );
     }
+
+    // ── peer_urls ─────────────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn peer_urls_returns_initial_peers() {
+        let gossip = Gossip::new(vec![
+            "http://a.example.com".to_string(),
+            "http://b.example.com".to_string(),
+        ]);
+        let mut urls = gossip.peer_urls().await;
+        urls.sort();
+        assert_eq!(
+            urls,
+            vec!["http://a.example.com", "http://b.example.com"]
+        );
+    }
+
+    #[tokio::test]
+    async fn peer_urls_reflects_added_peers() {
+        let gossip = Gossip::new(vec![]);
+        gossip.add_peer("http://p1.example.com".to_string()).await;
+        gossip.add_peer("http://p2.example.com".to_string()).await;
+        let mut urls = gossip.peer_urls().await;
+        urls.sort();
+        assert_eq!(urls, vec!["http://p1.example.com", "http://p2.example.com"]);
+    }
+
+    // ── evict_stale ───────────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn evict_stale_removes_all_with_zero_max_age() {
+        let gossip = Gossip::new(vec![
+            "http://old1.example.com".to_string(),
+            "http://old2.example.string".to_string(),
+        ]);
+        // Any positive elapsed time satisfies elapsed() > Duration::ZERO
+        let evicted = gossip.evict_stale(Duration::ZERO).await;
+        assert_eq!(evicted.len(), 2);
+        assert!(gossip.peer_urls().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn evict_stale_keeps_peers_within_max_age() {
+        let gossip = Gossip::new(vec!["http://fresh.example.com".to_string()]);
+        // One hour max age — a peer added just now is definitely within it
+        let evicted = gossip.evict_stale(Duration::from_secs(3600)).await;
+        assert!(evicted.is_empty());
+        assert_eq!(gossip.peer_urls().await.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn evict_stale_returns_evicted_urls() {
+        let gossip = Gossip::new(vec!["http://x.example.com".to_string()]);
+        let evicted = gossip.evict_stale(Duration::ZERO).await;
+        assert!(evicted.contains(&"http://x.example.com".to_string()));
+    }
+
+    // ── publish_transaction ───────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn publish_transaction_deduplicates() {
+        use lootcoin_core::transaction::Transaction;
+        let gossip = Gossip::new(vec![]);
+        let tx = Transaction {
+            sender: "alice".to_string(),
+            receiver: "bob".to_string(),
+            amount: 1,
+            fee: 0,
+            nonce: 0,
+            public_key: [0u8; 32],
+            signature: vec![0xBB],
+        };
+        assert!(gossip.publish_transaction(&tx).await);
+        assert!(!gossip.publish_transaction(&tx).await);
+    }
+
+    #[tokio::test]
+    async fn publish_transaction_distinct_signatures_both_accepted() {
+        use lootcoin_core::transaction::Transaction;
+        let gossip = Gossip::new(vec![]);
+        let make_tx = |sig: u8| Transaction {
+            sender: "alice".to_string(),
+            receiver: "bob".to_string(),
+            amount: 1,
+            fee: 0,
+            nonce: 0,
+            public_key: [0u8; 32],
+            signature: vec![sig],
+        };
+        assert!(gossip.publish_transaction(&make_tx(1)).await);
+        assert!(gossip.publish_transaction(&make_tx(2)).await);
+    }
+
+    // ── subscribe / event delivery ────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn subscribe_receives_published_block() {
+        use lootcoin_core::block::Block;
+        let gossip = Gossip::new(vec![]);
+        let mut rx = gossip.subscribe();
+        let block = Block {
+            index: 1,
+            previous_hash: vec![0u8; 32],
+            timestamp: 0,
+            nonce: 0,
+            tx_root: vec![],
+            transactions: vec![],
+            hash: vec![0xCC],
+        };
+        gossip.publish_block(&block).await;
+        match rx.try_recv().unwrap() {
+            NodeEvent::Block(b) => assert_eq!(b.hash, vec![0xCC]),
+            _ => panic!("expected Block event"),
+        }
+    }
+
+    #[tokio::test]
+    async fn subscribe_receives_published_transaction() {
+        use lootcoin_core::transaction::Transaction;
+        let gossip = Gossip::new(vec![]);
+        let mut rx = gossip.subscribe();
+        let tx = Transaction {
+            sender: "a".to_string(),
+            receiver: "b".to_string(),
+            amount: 5,
+            fee: 1,
+            nonce: 0,
+            public_key: [0u8; 32],
+            signature: vec![0xDD],
+        };
+        gossip.publish_transaction(&tx).await;
+        match rx.try_recv().unwrap() {
+            NodeEvent::Transaction(t) => assert_eq!(t.signature, vec![0xDD]),
+            _ => panic!("expected Transaction event"),
+        }
+    }
+
+    #[tokio::test]
+    async fn subscribe_does_not_receive_duplicate_block() {
+        use lootcoin_core::block::Block;
+        let gossip = Gossip::new(vec![]);
+        let block = Block {
+            index: 1,
+            previous_hash: vec![0u8; 32],
+            timestamp: 0,
+            nonce: 0,
+            tx_root: vec![],
+            transactions: vec![],
+            hash: vec![0xEE],
+        };
+        gossip.publish_block(&block).await; // first publish — no subscriber yet
+        let mut rx = gossip.subscribe();
+        gossip.publish_block(&block).await; // duplicate — must be dropped
+        assert!(rx.try_recv().is_err());
+    }
+
+    // ── try_start_subscription / end_subscription ─────────────────────────────
+
+    #[tokio::test]
+    async fn try_start_subscription_first_call_returns_true() {
+        let gossip = Gossip::new(vec![]);
+        assert!(gossip.try_start_subscription("http://peer.example.com").await);
+    }
+
+    #[tokio::test]
+    async fn try_start_subscription_duplicate_returns_false() {
+        let gossip = Gossip::new(vec![]);
+        gossip.try_start_subscription("http://peer.example.com").await;
+        assert!(!gossip.try_start_subscription("http://peer.example.com").await);
+    }
+
+    #[tokio::test]
+    async fn end_subscription_allows_restart() {
+        let gossip = Gossip::new(vec![]);
+        gossip.try_start_subscription("http://peer.example.com").await;
+        gossip.end_subscription("http://peer.example.com").await;
+        // After ending, a new subscription for the same URL should succeed
+        assert!(gossip.try_start_subscription("http://peer.example.com").await);
+    }
+
+    #[tokio::test]
+    async fn end_subscription_different_urls_are_independent() {
+        let gossip = Gossip::new(vec![]);
+        gossip.try_start_subscription("http://a.example.com").await;
+        gossip.try_start_subscription("http://b.example.com").await;
+        gossip.end_subscription("http://a.example.com").await;
+        // a is freed, b is still active
+        assert!(gossip.try_start_subscription("http://a.example.com").await);
+        assert!(!gossip.try_start_subscription("http://b.example.com").await);
+    }
 }
