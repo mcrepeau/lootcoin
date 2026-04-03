@@ -696,7 +696,7 @@ async fn main() {
     // 9a. Restore persisted mempool entries, dropping any that are now confirmed
     //     or have expired beyond the TX_EXPIRY_BLOCKS window.
     let current_height = chain.read().await.get_height();
-    let mut mempool = mempool::Mempool::new_with_db(Arc::clone(&db));
+    let mut mempool = mempool::Mempool::new(Some(Arc::clone(&db)));
     match db.load_mempool() {
         Ok(entries) => {
             let confirmed_filtered: Vec<_> = entries

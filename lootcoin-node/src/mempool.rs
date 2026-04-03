@@ -2,6 +2,7 @@ use lootcoin_core::transaction::Transaction;
 use serde::Serialize;
 use std::collections::HashMap;
 use std::sync::Arc;
+use crate::db::Db;
 
 #[derive(Serialize)]
 pub struct FeeStats {
@@ -24,14 +25,14 @@ struct MempoolEntry {
 
 pub struct Mempool {
     entries: HashMap<Vec<u8>, MempoolEntry>,
-    db: Option<Arc<crate::db::Db>>,
+    db: Option<Arc<Db>>,
 }
 
 impl Mempool {
-    pub fn new_with_db(db: Arc<crate::db::Db>) -> Self {
+    pub fn new(db: Option<Arc<Db>>) -> Self {
         Self {
             entries: HashMap::new(),
-            db: Some(db),
+            db,
         }
     }
 
@@ -219,20 +220,20 @@ mod tests {
 
     #[test]
     fn new_pool_is_empty() {
-        let pool = Mempool::new();
+        let pool = Mempool::new(None);
         assert_eq!(pool.len(), 0);
     }
 
     #[test]
     fn add_transaction_increases_len() {
-        let mut pool = Mempool::new();
+        let mut pool = Mempool::new(None);
         assert!(pool.add_transaction(make_tx(1, "alice", 100, 10), 0));
         assert_eq!(pool.len(), 1);
     }
 
     #[test]
     fn add_transaction_is_idempotent() {
-        let mut pool = Mempool::new();
+        let mut pool = Mempool::new(None);
         let tx = make_tx(1, "alice", 100, 10);
         pool.add_transaction(tx.clone(), 0);
         pool.add_transaction(tx, 5); // same signature — should not duplicate
@@ -241,7 +242,7 @@ mod tests {
 
     #[test]
     fn remove_included_removes_matching_txs() {
-        let mut pool = Mempool::new();
+        let mut pool = Mempool::new(None);
         let tx1 = make_tx(1, "alice", 100, 10);
         let tx2 = make_tx(2, "bob", 50, 5);
         pool.add_transaction(tx1.clone(), 0);
@@ -252,7 +253,7 @@ mod tests {
 
     #[test]
     fn remove_included_noop_for_unknown_tx() {
-        let mut pool = Mempool::new();
+        let mut pool = Mempool::new(None);
         pool.add_transaction(make_tx(1, "alice", 100, 10), 0);
         pool.remove_included(&[make_tx(99, "nobody", 0, 0)]);
         assert_eq!(pool.len(), 1);
@@ -260,7 +261,7 @@ mod tests {
 
     #[test]
     fn evict_expired_removes_too_old() {
-        let mut pool = Mempool::new();
+        let mut pool = Mempool::new(None);
         pool.add_transaction(make_tx(1, "alice", 100, 10), 0); // added at 0
         pool.add_transaction(make_tx(2, "bob", 100, 10), 50); // added at 50
                                                               // At height 101: age of tx1 = 101 > TX_EXPIRY_BLOCKS (100) → evicted
@@ -270,7 +271,7 @@ mod tests {
 
     #[test]
     fn evict_expired_keeps_exactly_at_boundary() {
-        let mut pool = Mempool::new();
+        let mut pool = Mempool::new(None);
         pool.add_transaction(make_tx(1, "alice", 100, 10), 0);
         // age = 100 == TX_EXPIRY_BLOCKS: retained (<=)
         pool.evict_expired(100);
@@ -279,7 +280,7 @@ mod tests {
 
     #[test]
     fn evict_expired_keeps_all_when_current_height_low() {
-        let mut pool = Mempool::new();
+        let mut pool = Mempool::new(None);
         pool.add_transaction(make_tx(1, "alice", 100, 10), 0);
         pool.add_transaction(make_tx(2, "bob", 50, 5), 0);
         pool.evict_expired(10); // only 10 blocks have passed
@@ -288,7 +289,7 @@ mod tests {
 
     #[test]
     fn pending_debit_sums_amount_plus_fee_per_sender() {
-        let mut pool = Mempool::new();
+        let mut pool = Mempool::new(None);
         pool.add_transaction(make_tx(1, "alice", 100, 10), 0); // debit 110
         pool.add_transaction(make_tx(2, "alice", 50, 5), 0); // debit 55
         pool.add_transaction(make_tx(3, "bob", 200, 20), 0); // not alice
@@ -299,20 +300,20 @@ mod tests {
 
     #[test]
     fn pending_debit_zero_for_unknown_sender() {
-        let pool = Mempool::new();
+        let pool = Mempool::new(None);
         assert_eq!(pool.pending_debit("nobody"), 0);
     }
 
     #[test]
     fn readd_displaced_skips_coinbase() {
-        let mut pool = Mempool::new();
+        let mut pool = Mempool::new(None);
         pool.readd_displaced(&[coinbase(1)], |_| 1000, 10);
         assert_eq!(pool.len(), 0);
     }
 
     #[test]
     fn readd_displaced_skips_already_present() {
-        let mut pool = Mempool::new();
+        let mut pool = Mempool::new(None);
         let tx = make_tx(1, "alice", 100, 10);
         pool.add_transaction(tx.clone(), 0);
         pool.readd_displaced(&[tx], |_| 1000, 10);
@@ -321,7 +322,7 @@ mod tests {
 
     #[test]
     fn readd_displaced_skips_unaffordable() {
-        let mut pool = Mempool::new();
+        let mut pool = Mempool::new(None);
         let tx = make_tx(1, "alice", 100, 10); // cost = 110
         pool.readd_displaced(&[tx], |_| 50, 10); // balance 50 < 110
         assert_eq!(pool.len(), 0);
@@ -329,7 +330,7 @@ mod tests {
 
     #[test]
     fn readd_displaced_adds_affordable_tx() {
-        let mut pool = Mempool::new();
+        let mut pool = Mempool::new(None);
         let tx = make_tx(1, "alice", 100, 10); // cost = 110
         pool.readd_displaced(&[tx], |_| 200, 10); // balance 200 >= 110
         assert_eq!(pool.len(), 1);
@@ -337,7 +338,7 @@ mod tests {
 
     #[test]
     fn readd_displaced_accounts_for_existing_pending_debit() {
-        let mut pool = Mempool::new();
+        let mut pool = Mempool::new(None);
         // alice already has a pending tx costing 150
         pool.add_transaction(make_tx(9, "alice", 140, 10), 0); // pending debit = 150
                                                                // try to re-add a tx costing 60; balance=200, effective=200-150=50 < 60 → skip
@@ -348,7 +349,7 @@ mod tests {
 
     #[test]
     fn all_transactions_with_height_returns_correct_count() {
-        let mut pool = Mempool::new();
+        let mut pool = Mempool::new(None);
         pool.add_transaction(make_tx(1, "alice", 100, 10), 5);
         pool.add_transaction(make_tx(2, "bob", 50, 5), 10);
         let all = pool.all_transactions_with_height();
@@ -357,7 +358,7 @@ mod tests {
 
     #[test]
     fn all_transactions_with_height_preserves_added_height() {
-        let mut pool = Mempool::new();
+        let mut pool = Mempool::new(None);
         pool.add_transaction(make_tx(1, "alice", 100, 10), 42);
         let all = pool.all_transactions_with_height();
         assert_eq!(all.len(), 1);
@@ -368,7 +369,7 @@ mod tests {
 
     #[test]
     fn fee_stats_empty_pool_returns_zero_count_and_none_fields() {
-        let pool = Mempool::new();
+        let pool = Mempool::new(None);
         let s = pool.fee_stats();
         assert_eq!(s.count, 0);
         assert!(s.min.is_none());
@@ -380,7 +381,7 @@ mod tests {
 
     #[test]
     fn fee_stats_single_tx_all_fields_equal_its_fee() {
-        let mut pool = Mempool::new();
+        let mut pool = Mempool::new(None);
         pool.add_transaction(make_tx(1, "alice", 100, 42), 0);
         let s = pool.fee_stats();
         assert_eq!(s.count, 1);
@@ -393,7 +394,7 @@ mod tests {
 
     #[test]
     fn fee_stats_correct_min_max_median() {
-        let mut pool = Mempool::new();
+        let mut pool = Mempool::new(None);
         // fees: 1, 5, 10, 20, 100 → sorted: [1, 5, 10, 20, 100]
         pool.add_transaction(make_tx(1, "a", 0, 10), 0);
         pool.add_transaction(make_tx(2, "b", 0, 1), 0);
