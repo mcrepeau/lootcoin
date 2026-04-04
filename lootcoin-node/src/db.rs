@@ -343,7 +343,8 @@ impl Db {
 
                 // Remove lottery TX_INDEX entries for this displaced block.
                 if let Some(stored) = lp_table.get(&block.index)? {
-                    let old_payouts: Vec<(String, u64, String)> = bincode::deserialize(stored.value())?;
+                    let old_payouts: Vec<(String, u64, String)> =
+                        bincode::deserialize(stored.value())?;
                     for (i, (receiver, _, _)) in old_payouts.iter().enumerate() {
                         let key = make_tx_key(receiver, block.index, 0xFFFF_0000 + i);
                         tx_table.remove(key.as_slice())?;
@@ -851,7 +852,10 @@ mod tests {
     }
 
     fn ticket(miner: &str, height: u64) -> LootTicket {
-        LootTicket { miner: miner.to_string(), created_height: height }
+        LootTicket {
+            miner: miner.to_string(),
+            created_height: height,
+        }
     }
 
     fn db() -> Db {
@@ -955,8 +959,16 @@ mod tests {
         let g = genesis();
         let b1 = next_block(&g, vec![user_tx("alice", "bob", 10, 2, 1)], 1_700_000_010);
         db.save_applied_block(&b1, &[], &[]).unwrap();
-        assert_eq!(db.get_transactions_for_address("alice", 0, 10).unwrap().len(), 1);
-        assert_eq!(db.get_transactions_for_address("bob", 0, 10).unwrap().len(), 1);
+        assert_eq!(
+            db.get_transactions_for_address("alice", 0, 10)
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(
+            db.get_transactions_for_address("bob", 0, 10).unwrap().len(),
+            1
+        );
     }
 
     #[test]
@@ -966,7 +978,12 @@ mod tests {
         let b1 = next_block(&g, vec![coinbase("miner")], 1_700_000_010);
         db.save_applied_block(&b1, &[], &[]).unwrap();
         // receiver entry exists, empty-sender entry does not
-        assert_eq!(db.get_transactions_for_address("miner", 0, 10).unwrap().len(), 1);
+        assert_eq!(
+            db.get_transactions_for_address("miner", 0, 10)
+                .unwrap()
+                .len(),
+            1
+        );
         assert_eq!(db.get_transactions_for_address("", 0, 10).unwrap().len(), 0);
     }
 
@@ -977,8 +994,16 @@ mod tests {
         let t = user_tx("alice", "bob", 10, 2, 42);
         let b1 = next_block(&g, vec![t.clone()], 1_700_000_010);
         db.save_applied_block(&b1, &[], &[]).unwrap();
-        assert_eq!(db.get_transactions_for_address("alice", 0, 10).unwrap().len(), 1);
-        assert_eq!(db.get_transactions_for_address("bob", 0, 10).unwrap().len(), 1);
+        assert_eq!(
+            db.get_transactions_for_address("alice", 0, 10)
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(
+            db.get_transactions_for_address("bob", 0, 10).unwrap().len(),
+            1
+        );
     }
 
     #[test]
@@ -986,9 +1011,11 @@ mod tests {
         let db = db();
         let g = genesis();
         let b1 = next_block(&g, vec![coinbase("m")], 1_700_000_010);
-        db.save_applied_block(&b1, &[ticket("old_miner", 1)], &[]).unwrap();
+        db.save_applied_block(&b1, &[ticket("old_miner", 1)], &[])
+            .unwrap();
         let b2 = next_block(&b1, vec![coinbase("m")], 1_700_000_020);
-        db.save_applied_block(&b2, &[ticket("new_miner", 2)], &[]).unwrap();
+        db.save_applied_block(&b2, &[ticket("new_miner", 2)], &[])
+            .unwrap();
         let loaded = db.load_tickets().unwrap();
         assert_eq!(loaded.len(), 1);
         assert_eq!(loaded[0].miner, "new_miner");
@@ -1014,7 +1041,10 @@ mod tests {
 
     #[test]
     fn get_transactions_unknown_address_is_empty() {
-        assert!(db().get_transactions_for_address("nobody", 0, 10).unwrap().is_empty());
+        assert!(db()
+            .get_transactions_for_address("nobody", 0, 10)
+            .unwrap()
+            .is_empty());
     }
 
     #[test]
@@ -1048,8 +1078,14 @@ mod tests {
         db.save_applied_block(&b1, &[], &[]).unwrap();
         // Rebuild from empty list — wipes everything
         db.rebuild_tx_index(&[], &HashMap::new()).unwrap();
-        assert!(db.get_transactions_for_address("alice", 0, 10).unwrap().is_empty());
-        assert!(db.get_transactions_for_address("bob", 0, 10).unwrap().is_empty());
+        assert!(db
+            .get_transactions_for_address("alice", 0, 10)
+            .unwrap()
+            .is_empty());
+        assert!(db
+            .get_transactions_for_address("bob", 0, 10)
+            .unwrap()
+            .is_empty());
     }
 
     #[test]
@@ -1058,7 +1094,12 @@ mod tests {
         let g = genesis();
         let b1 = next_block(&g, vec![coinbase("alice")], 1_700_000_010);
         db.rebuild_tx_index(&[g, b1], &HashMap::new()).unwrap();
-        assert_eq!(db.get_transactions_for_address("alice", 0, 10).unwrap().len(), 1);
+        assert_eq!(
+            db.get_transactions_for_address("alice", 0, 10)
+                .unwrap()
+                .len(),
+            1
+        );
     }
 
     #[test]
@@ -1067,7 +1108,10 @@ mod tests {
         let g = genesis();
         let b1 = next_block(&g, vec![coinbase("m")], 1_700_000_010);
         let mut payouts_map = HashMap::new();
-        payouts_map.insert(1u64, vec![("alice".to_string(), 100u64, "small".to_string())]);
+        payouts_map.insert(
+            1u64,
+            vec![("alice".to_string(), 100u64, "small".to_string())],
+        );
         db.rebuild_tx_index(&[g, b1], &payouts_map).unwrap();
         let records = db.get_transactions_for_address("alice", 0, 10).unwrap();
         assert_eq!(records.len(), 1);
@@ -1083,10 +1127,22 @@ mod tests {
         let old_b1 = next_block(&g, vec![user_tx("alice", "bob", 10, 2, 1)], 1_700_000_010);
         db.save_applied_block(&old_b1, &[], &[]).unwrap();
         let new_b1 = next_block(&g, vec![coinbase("carol")], 1_700_000_015);
-        db.apply_reorg_incremental(&[old_b1], &[new_b1], &[], &HashMap::new()).unwrap();
-        assert!(db.get_transactions_for_address("alice", 0, 10).unwrap().is_empty());
-        assert!(db.get_transactions_for_address("bob", 0, 10).unwrap().is_empty());
-        assert_eq!(db.get_transactions_for_address("carol", 0, 10).unwrap().len(), 1);
+        db.apply_reorg_incremental(&[old_b1], &[new_b1], &[], &HashMap::new())
+            .unwrap();
+        assert!(db
+            .get_transactions_for_address("alice", 0, 10)
+            .unwrap()
+            .is_empty());
+        assert!(db
+            .get_transactions_for_address("bob", 0, 10)
+            .unwrap()
+            .is_empty());
+        assert_eq!(
+            db.get_transactions_for_address("carol", 0, 10)
+                .unwrap()
+                .len(),
+            1
+        );
     }
 
     #[test]
@@ -1096,10 +1152,19 @@ mod tests {
         let t = user_tx("alice", "bob", 10, 2, 99);
         let old_b1 = next_block(&g, vec![t.clone()], 1_700_000_010);
         db.save_applied_block(&old_b1, &[], &[]).unwrap();
-        assert_eq!(db.get_transactions_for_address("alice", 0, 10).unwrap().len(), 1);
+        assert_eq!(
+            db.get_transactions_for_address("alice", 0, 10)
+                .unwrap()
+                .len(),
+            1
+        );
         let new_b1 = next_block(&g, vec![coinbase("carol")], 1_700_000_015);
-        db.apply_reorg_incremental(&[old_b1], &[new_b1], &[], &HashMap::new()).unwrap();
-        assert!(db.get_transactions_for_address("alice", 0, 10).unwrap().is_empty());
+        db.apply_reorg_incremental(&[old_b1], &[new_b1], &[], &HashMap::new())
+            .unwrap();
+        assert!(db
+            .get_transactions_for_address("alice", 0, 10)
+            .unwrap()
+            .is_empty());
     }
 
     #[test]
@@ -1110,8 +1175,12 @@ mod tests {
         let old_payouts = vec![("alice".to_string(), 500u64, "jackpot".to_string())];
         db.save_applied_block(&b1, &[], &old_payouts).unwrap();
         let new_b1 = next_block(&g, vec![coinbase("m")], 1_700_000_015);
-        db.apply_reorg_incremental(&[b1], &[new_b1], &[], &HashMap::new()).unwrap();
-        assert!(db.get_transactions_for_address("alice", 0, 10).unwrap().is_empty());
+        db.apply_reorg_incremental(&[b1], &[new_b1], &[], &HashMap::new())
+            .unwrap();
+        assert!(db
+            .get_transactions_for_address("alice", 0, 10)
+            .unwrap()
+            .is_empty());
         assert!(db.get_lottery_payouts_range(1, 1).unwrap().is_empty());
     }
 
@@ -1123,8 +1192,12 @@ mod tests {
         db.save_applied_block(&old_b1, &[], &[]).unwrap();
         let new_b1 = next_block(&g, vec![coinbase("m")], 1_700_000_015);
         let mut new_payouts = HashMap::new();
-        new_payouts.insert(1u64, vec![("bob".to_string(), 200u64, "medium".to_string())]);
-        db.apply_reorg_incremental(&[old_b1], &[new_b1], &[], &new_payouts).unwrap();
+        new_payouts.insert(
+            1u64,
+            vec![("bob".to_string(), 200u64, "medium".to_string())],
+        );
+        db.apply_reorg_incremental(&[old_b1], &[new_b1], &[], &new_payouts)
+            .unwrap();
         let records = db.get_transactions_for_address("bob", 0, 10).unwrap();
         assert_eq!(records.len(), 1);
         assert_eq!(records[0].sender, "lottery");
@@ -1135,9 +1208,11 @@ mod tests {
         let db = db();
         let g = genesis();
         let b1 = next_block(&g, vec![coinbase("m")], 1_700_000_010);
-        db.save_applied_block(&b1, &[ticket("old_miner", 1)], &[]).unwrap();
+        db.save_applied_block(&b1, &[ticket("old_miner", 1)], &[])
+            .unwrap();
         let new_b1 = next_block(&g, vec![coinbase("m2")], 1_700_000_015);
-        db.apply_reorg_incremental(&[b1], &[new_b1], &[ticket("new_miner", 2)], &HashMap::new()).unwrap();
+        db.apply_reorg_incremental(&[b1], &[new_b1], &[ticket("new_miner", 2)], &HashMap::new())
+            .unwrap();
         let loaded = db.load_tickets().unwrap();
         assert_eq!(loaded.len(), 1);
         assert_eq!(loaded[0].miner, "new_miner");
@@ -1153,9 +1228,18 @@ mod tests {
         let b1 = next_block(&g, vec![t.clone()], 1_700_000_010);
         db.save_block_indexed(&g).unwrap();
         db.save_block_indexed(&b1).unwrap();
-        db.rebuild_indices_with_tickets(&[ticket("miner", 1)], &HashMap::new()).unwrap();
-        assert_eq!(db.get_transactions_for_address("alice", 0, 10).unwrap().len(), 1);
-        assert_eq!(db.get_transactions_for_address("bob", 0, 10).unwrap().len(), 1);
+        db.rebuild_indices_with_tickets(&[ticket("miner", 1)], &HashMap::new())
+            .unwrap();
+        assert_eq!(
+            db.get_transactions_for_address("alice", 0, 10)
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(
+            db.get_transactions_for_address("bob", 0, 10).unwrap().len(),
+            1
+        );
         let tickets = db.load_tickets().unwrap();
         assert_eq!(tickets.len(), 1);
         assert_eq!(tickets[0].miner, "miner");
@@ -1169,7 +1253,10 @@ mod tests {
         db.save_block_indexed(&g).unwrap();
         db.save_block_indexed(&b1).unwrap();
         let mut payouts = HashMap::new();
-        payouts.insert(1u64, vec![("alice".to_string(), 100u64, "small".to_string())]);
+        payouts.insert(
+            1u64,
+            vec![("alice".to_string(), 100u64, "small".to_string())],
+        );
         db.rebuild_indices_with_tickets(&[], &payouts).unwrap();
         let records = db.get_transactions_for_address("alice", 0, 10).unwrap();
         assert_eq!(records.len(), 1);
@@ -1184,8 +1271,10 @@ mod tests {
         let g = genesis();
         let b1 = next_block(&g, vec![coinbase("m")], 1_700_000_010);
         let b2 = next_block(&b1, vec![coinbase("m")], 1_700_000_020);
-        db.save_applied_block(&b1, &[], &[("a".to_string(), 100u64, "small".to_string())]).unwrap();
-        db.save_applied_block(&b2, &[], &[("b".to_string(), 200u64, "medium".to_string())]).unwrap();
+        db.save_applied_block(&b1, &[], &[("a".to_string(), 100u64, "small".to_string())])
+            .unwrap();
+        db.save_applied_block(&b2, &[], &[("b".to_string(), 200u64, "medium".to_string())])
+            .unwrap();
         let map = db.get_lottery_payouts_range(1, 2).unwrap();
         assert_eq!(map.len(), 2);
         assert!(map.contains_key(&1));
@@ -1246,14 +1335,22 @@ mod tests {
         let db = db();
         let g = genesis();
         let b1 = next_block(&g, vec![coinbase("m")], 1_700_000_042);
-        db.save_applied_block(&b1, &[], &[("alice".to_string(), 100u64, "small".to_string())]).unwrap();
+        db.save_applied_block(
+            &b1,
+            &[],
+            &[("alice".to_string(), 100u64, "small".to_string())],
+        )
+        .unwrap();
         let results = db.get_recent_lottery_payouts(None, 1).unwrap();
         assert_eq!(results[0].block_timestamp, Some(1_700_000_042));
     }
 
     #[test]
     fn get_recent_lottery_payouts_empty_when_none() {
-        assert!(db().get_recent_lottery_payouts(None, 10).unwrap().is_empty());
+        assert!(db()
+            .get_recent_lottery_payouts(None, 10)
+            .unwrap()
+            .is_empty());
     }
 
     // ── scan_lottery_payout_totals ────────────────────────────────────────────
@@ -1269,11 +1366,17 @@ mod tests {
         let g = genesis();
         let b1 = next_block(&g, vec![coinbase("m")], 1_700_000_010);
         let b2 = next_block(&b1, vec![coinbase("m")], 1_700_000_020);
-        db.save_applied_block(&b1, &[], &[("a".to_string(), 100u64, "small".to_string())]).unwrap();
-        db.save_applied_block(&b2, &[], &[
-            ("b".to_string(), 200u64, "small".to_string()),
-            ("c".to_string(), 500u64, "jackpot".to_string()),
-        ]).unwrap();
+        db.save_applied_block(&b1, &[], &[("a".to_string(), 100u64, "small".to_string())])
+            .unwrap();
+        db.save_applied_block(
+            &b2,
+            &[],
+            &[
+                ("b".to_string(), 200u64, "small".to_string()),
+                ("c".to_string(), 500u64, "jackpot".to_string()),
+            ],
+        )
+        .unwrap();
         let totals = db.scan_lottery_payout_totals().unwrap();
         assert_eq!(totals["small"], (2, 300));
         assert_eq!(totals["jackpot"], (1, 500));
@@ -1366,7 +1469,10 @@ mod tests {
     fn save_and_load_checkpoint() {
         let db = db();
         db.save_checkpoint(100, b"snapshot_data").unwrap();
-        assert_eq!(db.load_checkpoint(100).unwrap(), Some(b"snapshot_data".to_vec()));
+        assert_eq!(
+            db.load_checkpoint(100).unwrap(),
+            Some(b"snapshot_data".to_vec())
+        );
     }
 
     #[test]
@@ -1425,10 +1531,14 @@ mod tests {
         let g = genesis();
         // b1: fee=10; b2: fees=4+6=10 → total=20, miner_share=5+2+3=10
         let b1 = next_block(&g, vec![user_tx("alice", "bob", 100, 10, 1)], 1_700_000_010);
-        let b2 = next_block(&b1, vec![
-            user_tx("carol", "dave", 50, 4, 2),
-            user_tx("eve", "frank", 30, 6, 3),
-        ], 1_700_000_020);
+        let b2 = next_block(
+            &b1,
+            vec![
+                user_tx("carol", "dave", 50, 4, 2),
+                user_tx("eve", "frank", 30, 6, 3),
+            ],
+            1_700_000_020,
+        );
         db.save_block_indexed(&g).unwrap();
         db.save_block_indexed(&b1).unwrap();
         db.save_block_indexed(&b2).unwrap();

@@ -285,8 +285,10 @@ fn cmd_send(
     let wallet = wallet_from_file(&wf)?;
 
     // Fetch balance to get next_nonce before signing.
-    let bal: BalanceResponse =
-        get_json(client, &format!("{}/balance/{}", node, wallet.get_address()))?;
+    let bal: BalanceResponse = get_json(
+        client,
+        &format!("{}/balance/{}", node, wallet.get_address()),
+    )?;
     let nonce = bal.next_nonce;
 
     println!("From:   {}", wallet.get_address());

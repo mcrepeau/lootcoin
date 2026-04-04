@@ -1,8 +1,8 @@
+use crate::db::Db;
 use lootcoin_core::transaction::Transaction;
 use serde::Serialize;
 use std::collections::HashMap;
 use std::sync::Arc;
-use crate::db::Db;
 
 #[derive(Serialize)]
 pub struct FeeStats {
@@ -57,7 +57,10 @@ impl Mempool {
                 .entry(sender)
                 .and_modify(|existing| {
                     if added_height > existing.added_height {
-                        *existing = MempoolEntry { tx: tx.clone(), added_height };
+                        *existing = MempoolEntry {
+                            tx: tx.clone(),
+                            added_height,
+                        };
                     }
                 })
                 .or_insert(MempoolEntry { tx, added_height });
@@ -374,7 +377,7 @@ mod tests {
     fn readd_displaced_skips_stale_nonce() {
         let mut pool = Mempool::new(None);
         let tx = make_tx(1, "alice", 100, 10); // nonce = 0
-        // chain nonce is now 1 (tx was already confirmed), so nonce 0 is stale
+                                               // chain nonce is now 1 (tx was already confirmed), so nonce 0 is stale
         pool.readd_displaced(&[tx], |_| 1000, |_| 1, 10);
         assert_eq!(pool.len(), 0);
     }

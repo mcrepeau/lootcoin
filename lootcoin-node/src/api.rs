@@ -1145,8 +1145,8 @@ mod tests {
     use axum::body::{to_bytes, Body};
     use axum::http::{Request, StatusCode};
     use lootcoin_core::{block::Block, transaction::Transaction, wallet::Wallet};
-    use std::sync::Arc;
     use std::sync::atomic::AtomicUsize;
+    use std::sync::Arc;
     use std::time::{SystemTime, UNIX_EPOCH};
     use tokio::sync::{watch, RwLock};
     use tower::ServiceExt;
@@ -1449,7 +1449,8 @@ mod tests {
             hash: vec![],
         };
         state.db.save_applied_block(&g, &[], &[]).unwrap();
-        let body = json_body(get_req(state, &format!("/address/{}/transactions", addr)).await).await;
+        let body =
+            json_body(get_req(state, &format!("/address/{}/transactions", addr)).await).await;
         assert_eq!(body.as_array().unwrap().len(), 1);
         assert_eq!(body[0]["receiver"], addr);
     }
@@ -1479,10 +1480,7 @@ mod tests {
             };
             state.db.save_applied_block(&b, &[], &[]).unwrap();
         }
-        let body = json_body(
-            get_req(state, "/address/alice/transactions?limit=2").await,
-        )
-        .await;
+        let body = json_body(get_req(state, "/address/alice/transactions?limit=2").await).await;
         assert_eq!(body.as_array().unwrap().len(), 2);
     }
 
@@ -1591,10 +1589,7 @@ mod tests {
                 ],
             )
             .unwrap();
-        let body = json_body(
-            get_req(state, "/lottery/recent-payouts?tier=jackpot").await,
-        )
-        .await;
+        let body = json_body(get_req(state, "/lottery/recent-payouts?tier=jackpot").await).await;
         assert_eq!(body.as_array().unwrap().len(), 1);
         assert_eq!(body[0]["tier"], "jackpot");
     }

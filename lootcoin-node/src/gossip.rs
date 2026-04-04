@@ -304,10 +304,7 @@ mod tests {
         ]);
         let mut urls = gossip.peer_urls().await;
         urls.sort();
-        assert_eq!(
-            urls,
-            vec!["http://a.example.com", "http://b.example.com"]
-        );
+        assert_eq!(urls, vec!["http://a.example.com", "http://b.example.com"]);
     }
 
     #[tokio::test]
@@ -454,23 +451,39 @@ mod tests {
     #[tokio::test]
     async fn try_start_subscription_first_call_returns_true() {
         let gossip = Gossip::new(vec![]);
-        assert!(gossip.try_start_subscription("http://peer.example.com").await);
+        assert!(
+            gossip
+                .try_start_subscription("http://peer.example.com")
+                .await
+        );
     }
 
     #[tokio::test]
     async fn try_start_subscription_duplicate_returns_false() {
         let gossip = Gossip::new(vec![]);
-        gossip.try_start_subscription("http://peer.example.com").await;
-        assert!(!gossip.try_start_subscription("http://peer.example.com").await);
+        gossip
+            .try_start_subscription("http://peer.example.com")
+            .await;
+        assert!(
+            !gossip
+                .try_start_subscription("http://peer.example.com")
+                .await
+        );
     }
 
     #[tokio::test]
     async fn end_subscription_allows_restart() {
         let gossip = Gossip::new(vec![]);
-        gossip.try_start_subscription("http://peer.example.com").await;
+        gossip
+            .try_start_subscription("http://peer.example.com")
+            .await;
         gossip.end_subscription("http://peer.example.com").await;
         // After ending, a new subscription for the same URL should succeed
-        assert!(gossip.try_start_subscription("http://peer.example.com").await);
+        assert!(
+            gossip
+                .try_start_subscription("http://peer.example.com")
+                .await
+        );
     }
 
     #[tokio::test]

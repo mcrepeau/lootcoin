@@ -1309,7 +1309,14 @@ mod tests {
             signature: vec![42],
         };
         chain.apply_transaction(&tx);
-        assert_eq!(chain.account_nonces.get("genesis_miner").copied().unwrap_or(0), 1);
+        assert_eq!(
+            chain
+                .account_nonces
+                .get("genesis_miner")
+                .copied()
+                .unwrap_or(0),
+            1
+        );
     }
 
     // ── validate_transaction_state ───────────────────────────────────────────
@@ -2528,7 +2535,11 @@ mod tests {
         );
         chain.apply_in_memory(b_main, None);
         assert_eq!(
-            chain.account_nonces.get(&alice.get_address()).copied().unwrap_or(0),
+            chain
+                .account_nonces
+                .get(&alice.get_address())
+                .copied()
+                .unwrap_or(0),
             1,
             "nonce must be incremented after confirmation"
         );
@@ -2557,7 +2568,11 @@ mod tests {
 
         // Alice's nonce must be reset to 0 by the reorg.
         assert_eq!(
-            chain.account_nonces.get(&alice.get_address()).copied().unwrap_or(0),
+            chain
+                .account_nonces
+                .get(&alice.get_address())
+                .copied()
+                .unwrap_or(0),
             0,
             "displaced tx nonce must be rolled back after reorg"
         );

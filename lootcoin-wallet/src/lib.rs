@@ -62,10 +62,9 @@ fn key_from_mnemonic(m: &Mnemonic) -> [u8; 32] {
     ];
 
     for index in PATH {
-        let mut mac =
-            HmacSha512::new_from_slice(&chain_code).expect("HMAC accepts any key size");
-        mac.update(&[0x00]);          // hardened child prefix
-        mac.update(&key);             // parent private key
+        let mut mac = HmacSha512::new_from_slice(&chain_code).expect("HMAC accepts any key size");
+        mac.update(&[0x00]); // hardened child prefix
+        mac.update(&key); // parent private key
         mac.update(&index.to_be_bytes());
         let result = mac.finalize().into_bytes();
         key = result[..32].try_into().expect("32 bytes");
