@@ -1,6 +1,7 @@
 use bip39::Mnemonic;
 use clap::{Parser, Subcommand};
 use lootcoin_core::{transaction::Transaction, wallet::Wallet};
+use lootcoin_wallet::derivation::key_from_mnemonic;
 use rand::{rngs::OsRng, RngCore};
 use serde::{Deserialize, Serialize};
 use std::{fs, path::PathBuf};
@@ -101,11 +102,6 @@ fn wallet_from_file(wf: &WalletFile) -> Result<Wallet, String> {
         .try_into()
         .map_err(|_| "Wallet file: secret key must be 32 bytes".to_string())?;
     Ok(Wallet::from_secret_key_bytes(arr))
-}
-
-fn key_from_mnemonic(m: &Mnemonic) -> [u8; 32] {
-    let seed = m.to_seed("");
-    seed[..32].try_into().expect("seed is at least 32 bytes")
 }
 
 // ── Node API types ────────────────────────────────────────────────────────────

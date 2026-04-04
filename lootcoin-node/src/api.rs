@@ -298,18 +298,16 @@ async fn relay_tx_inner(state: &AppState, tx: Transaction) -> bool {
         warn!(target: "api", "relayed tx failed signature check");
         return false;
     }
-    let (chain_ok, height, confirmed_balance) = {
-        let chain = state.chain.read().await;
-        let ok = chain.validate_transaction_state(&tx);
-        let height = chain.get_height();
-        let confirmed = chain.get_balance(&tx.sender);
-        (ok, height, confirmed)
-    };
-    if !chain_ok {
+    let chain = state.chain.read().await;
+    if !chain.validate_transaction_state(&tx) {
         return false;
     }
-    // Check effective balance (confirmed − pending) and insert under the same
-    // write lock — same TOCTOU protection as submit_transaction_handler.
+    let height = chain.get_height();
+    let confirmed_balance = chain.get_balance(&tx.sender);
+    // Hold the chain read lock through the mempool insert. This prevents a
+    // block from being applied (chain.write is exclusive with chain.read)
+    // between validation and insertion, which would otherwise leave a stale
+    // nonce or balance in the mempool.
     {
         let mut pool = state.mempool.write().await;
         let already_pending = pool.pending_debit(&tx.sender);
@@ -322,6 +320,7 @@ async fn relay_tx_inner(state: &AppState, tx: Transaction) -> bool {
             return false; // full or duplicate
         }
     }
+    drop(chain);
     state.gossip.publish_transaction(&tx).await;
     true
 }
@@ -398,27 +397,21 @@ pub async fn submit_transaction_handler(
         ));
     }
 
-    // Validate fee, nonce, and confirmed balance under the chain read lock.
-    // We also capture the confirmed balance here so we can re-check effective
-    // balance (confirmed − pending) under the mempool write lock below.
-    let (chain_ok, current_height, confirmed_balance) = {
-        let chain = state.chain.read().await;
-        let ok = chain.validate_transaction_state(&tx);
-        let height = chain.get_height();
-        let confirmed = chain.get_balance(&tx.sender);
-        (ok, height, confirmed)
-    };
-    if !chain_ok {
+    // Validate fee, nonce, and confirmed balance, then insert into the mempool
+    // — all while holding the chain read lock. This prevents a block from being
+    // applied between validation and insertion (block application requires
+    // chain.write, which is exclusive with chain.read), closing the TOCTOU
+    // window where the sender's nonce or balance could change mid-check.
+    let chain = state.chain.read().await;
+    if !chain.validate_transaction_state(&tx) {
         warn!(target: "api", "tx validation failed (balance/fee/replay)");
         return Err((
             axum::http::StatusCode::BAD_REQUEST,
             "transaction not valid (balance or fee)".into(),
         ));
     }
-
-    // Check effective balance AND insert under the same write lock to eliminate
-    // the TOCTOU race: two concurrent requests for the same sender both passing
-    // the check before either has been inserted.
+    let current_height = chain.get_height();
+    let confirmed_balance = chain.get_balance(&tx.sender);
     let (accepted, mempool_len) = {
         let mut pool = state.mempool.write().await;
         let already_pending = pool.pending_debit(&tx.sender);
@@ -433,6 +426,7 @@ pub async fn submit_transaction_handler(
         let ok = pool.add_transaction(tx.clone(), current_height);
         (ok, pool.len())
     };
+    drop(chain);
     if !accepted {
         warn!(target: "api", "mempool full, rejecting tx from {}", tx.sender);
         return Err((
