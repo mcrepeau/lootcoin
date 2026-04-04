@@ -708,6 +708,64 @@ impl Blockchain {
         1u128.checked_shl(bits).unwrap_or(u128::MAX)
     }
 
+    /// Look up the timestamp of the block identified by `hash`.
+    ///
+    /// Checks the main-chain in-memory window first, then the orphan pool.
+    /// Returns `None` when the block is not in memory (e.g. historical blocks
+    /// that predate the sliding window).
+    fn find_block_timestamp(&self, hash: &[u8]) -> Option<u64> {
+        // Main-chain window: block_hashes maps hash → absolute index.
+        if let Some(&index) = self.block_hashes.get(hash) {
+            if index >= self.blocks_offset {
+                let relative = (index - self.blocks_offset) as usize;
+                if let Some(b) = self.blocks.get(relative) {
+                    return Some(b.timestamp);
+                }
+            }
+        }
+        // Orphan pool: the predecessor may itself be a pending fork block.
+        self.orphan_pool.get(hash).map(|b| b.timestamp)
+    }
+
+    /// Compute the PoW difficulty that `block` should meet, based on the ASERT
+    /// formula applied to its predecessor rather than the main-chain tip.
+    ///
+    /// An orphan block's required difficulty was set when its predecessor was
+    /// applied on *its own fork*, so it diverges from `current_difficulty`
+    /// whenever the fork's block timing differs from the main chain's.
+    ///
+    /// Mirrors the guard in `update_state`: returns `current_difficulty`
+    /// unchanged when the anchor has not been established yet, or when the
+    /// anchor difficulty is below `MIN_DIFFICULTY` (test chains with
+    /// difficulty=0 that skip ASERT entirely).
+    ///
+    /// Also returns `current_difficulty` when the predecessor cannot be found
+    /// in memory — consistent with the pre-fix behaviour for deep historical
+    /// forks whose ancestors predate the sliding window.
+    fn expected_difficulty_for(&self, block: &Block) -> f64 {
+        let (anchor_height, anchor_ts, anchor_diff) = match self.asert_anchor {
+            Some(a) => a,
+            None => return self.current_difficulty,
+        };
+        // Matches the guard in update_state so that test chains with
+        // difficulty=0 (anchor_diff < MIN_DIFFICULTY) are unaffected.
+        if anchor_diff < MIN_DIFFICULTY {
+            return self.current_difficulty;
+        }
+        let prev_ts = match self.find_block_timestamp(&block.previous_hash) {
+            Some(ts) => ts,
+            None => return self.current_difficulty,
+        };
+        let prev_index = block.index.saturating_sub(1);
+        if prev_index < anchor_height {
+            return self.current_difficulty;
+        }
+        let ideal = (prev_index - anchor_height) * TARGET_BLOCK_TIME_SECS;
+        let actual = prev_ts.saturating_sub(anchor_ts);
+        let adjustment = (ideal as f64 - actual as f64) / ASERT_HALFLIFE_SECS;
+        (anchor_diff + adjustment).clamp(MIN_DIFFICULTY, MAX_DIFFICULTY)
+    }
+
     fn validate_block_standalone(&self, block: &Block) -> bool {
         let non_coinbase = block
             .transactions
@@ -715,7 +773,7 @@ impl Blockchain {
             .filter(|t| !t.sender.is_empty())
             .count();
         block.calculate_hash() == block.hash
-            && meets_difficulty(&block.hash, self.current_difficulty)
+            && meets_difficulty(&block.hash, self.expected_difficulty_for(block))
             && block.index <= self.get_height() + MAX_ORPHAN_DEPTH
             && non_coinbase <= MAX_BLOCK_TXS
     }
@@ -2164,6 +2222,112 @@ mod tests {
             "expected 9.0, got {}",
             chain.get_difficulty()
         );
+    }
+
+    // ── expected_difficulty_for ───────────────────────────────────────────────
+
+    #[test]
+    fn expected_difficulty_falls_back_when_no_anchor() {
+        // With no asert_anchor set, expected_difficulty_for must return
+        // current_difficulty unchanged.
+        let chain = make_chain(); // difficulty=0, anchor=None
+        let b = next_block(&chain, vec![coinbase_tx("m")], GENESIS_TS + 60);
+        assert_eq!(chain.expected_difficulty_for(&b), chain.current_difficulty);
+    }
+
+    #[test]
+    fn expected_difficulty_falls_back_when_predecessor_not_in_memory() {
+        let mut chain = make_chain();
+        // Inject a real-difficulty anchor so the ASERT branch is reached.
+        chain.asert_anchor = Some((1, GENESIS_TS + 60, 10.0));
+
+        // Block whose previous_hash is unknown — not in block_hashes or orphan_pool.
+        let orphan = block_at(2, vec![0xDE, 0xAD, 0xBE, 0xEF], vec![coinbase_tx("m")], GENESIS_TS + 120);
+        assert_eq!(chain.expected_difficulty_for(&orphan), chain.current_difficulty);
+    }
+
+    #[test]
+    fn expected_difficulty_uses_predecessor_timestamp_from_main_chain() {
+        // Apply two blocks so block_hashes and the in-memory window are populated.
+        let mut chain = make_chain(); // difficulty=0
+        let b1 = next_block(&chain, vec![coinbase_tx("m")], GENESIS_TS + 60);
+        chain.apply_in_memory(b1, None);
+        let b2 = next_block(&chain, vec![coinbase_tx("m")], GENESIS_TS + 120);
+        chain.apply_in_memory(b2, None);
+
+        // Inject anchor: height=1, ts=GENESIS_TS+60, diff=10.0.
+        chain.asert_anchor = Some((1, GENESIS_TS + 60, 10.0));
+
+        // Fork block at index 3 rooted off b2 (ts = GENESIS_TS+120).
+        // prev_index=2, anchor_height=1:
+        //   ideal  = (2−1) × 60 = 60 s
+        //   actual = (GENESIS_TS+120) − (GENESIS_TS+60) = 60 s
+        //   adj    = (60−60) / 3600 = 0  →  expected = 10.0
+        let fork_b3 = next_block(&chain, vec![coinbase_tx("f")], GENESIS_TS + 300);
+        assert!(
+            (chain.expected_difficulty_for(&fork_b3) - 10.0).abs() < 1e-9,
+            "expected 10.0, got {}",
+            chain.expected_difficulty_for(&fork_b3),
+        );
+    }
+
+    #[test]
+    fn expected_difficulty_uses_predecessor_timestamp_from_orphan_pool() {
+        // Shows that a slow-fork block's predecessor (in the orphan pool) drives
+        // a lower expected difficulty than the main chain's current_difficulty.
+        let mut chain = make_chain(); // difficulty=0
+        let b1 = next_block(&chain, vec![coinbase_tx("m")], GENESIS_TS + 60);
+        let b1_hash = b1.hash.clone();
+        chain.apply_in_memory(b1, None);
+
+        // Inject anchor: height=1, ts=GENESIS_TS+60, diff=10.0.
+        chain.asert_anchor = Some((1, GENESIS_TS + 60, 10.0));
+
+        // Slow fork block 2: very late timestamp → sits in the orphan pool.
+        let fork_b2_ts = GENESIS_TS + 100_000;
+        let fork_b2 = block_at(2, b1_hash, vec![coinbase_tx("f")], fork_b2_ts);
+        chain.orphan_pool.insert(fork_b2.hash.clone(), fork_b2.clone());
+
+        // Fork block 3: predecessor = fork_b2 (in orphan pool).
+        // prev_index=2, anchor_height=1:
+        //   ideal  = (2−1) × 60 = 60 s
+        //   actual = 100_000 − 60 = 99_940 s
+        //   adj    = (60 − 99_940) / 3600 ≈ −27.7  →  clamp to MIN_DIFFICULTY
+        let fork_b3 = block_at(3, fork_b2.hash.clone(), vec![coinbase_tx("f")], GENESIS_TS + 100_060);
+        assert_eq!(chain.expected_difficulty_for(&fork_b3), MIN_DIFFICULTY);
+        // And this is well below the main chain's injected anchor_diff=10.0,
+        // confirming the fork correctly gets a lower bar.
+        assert!(chain.expected_difficulty_for(&fork_b3) < 10.0);
+    }
+
+    #[test]
+    fn expected_difficulty_fast_fork_raises_bar() {
+        // A fork whose predecessor arrived very fast should require higher difficulty.
+        let mut chain = make_chain(); // difficulty=0
+        let b1 = next_block(&chain, vec![coinbase_tx("m")], GENESIS_TS + 60);
+        let b1_hash = b1.hash.clone();
+        chain.apply_in_memory(b1, None);
+
+        // Inject anchor: height=1, ts=GENESIS_TS+60, diff=10.0.
+        chain.asert_anchor = Some((1, GENESIS_TS + 60, 10.0));
+
+        // Fast fork block 2: arrived 1 second after block 1 (vs 60 s ideal).
+        let fork_b2 = block_at(2, b1_hash, vec![coinbase_tx("f")], GENESIS_TS + 61);
+        chain.orphan_pool.insert(fork_b2.hash.clone(), fork_b2.clone());
+
+        // Fork block 3: predecessor = fork_b2 (ts = GENESIS_TS+61).
+        // prev_index=2, anchor_height=1:
+        //   ideal  = 60 s
+        //   actual = 61 − 60 = 1 s
+        //   adj    = (60 − 1) / 3600 = 59/3600 ≈ +0.0164  →  > 10.0
+        let fork_b3 = block_at(3, fork_b2.hash.clone(), vec![coinbase_tx("f")], GENESIS_TS + 180);
+        let expected = 10.0 + 59.0 / ASERT_HALFLIFE_SECS;
+        assert!(
+            (chain.expected_difficulty_for(&fork_b3) - expected).abs() < 1e-9,
+            "expected {expected}, got {}",
+            chain.expected_difficulty_for(&fork_b3),
+        );
+        assert!(chain.expected_difficulty_for(&fork_b3) > 10.0);
     }
 
     // ── Reorg ─────────────────────────────────────────────────────────────────
