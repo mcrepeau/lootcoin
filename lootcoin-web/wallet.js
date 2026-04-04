@@ -289,7 +289,14 @@ async function submitTransaction() {
 
   if (!await confirmSend(receiver, amount, fee)) return;
 
-  const submission = wallet.sign_transaction(receiver, amount, fee);
+  // Fetch next_nonce immediately before signing to avoid stale nonces.
+  const addr = byId("address").textContent;
+  const balRes = await fetch(`${base()}/balance/${addr}`);
+  if (!balRes.ok) { setErr("Failed to fetch nonce from node."); return; }
+  const balData = await balRes.json();
+  const nonce = BigInt(balData.next_nonce);
+
+  const submission = wallet.sign_transaction(receiver, amount, fee, nonce);
   const payload = JSON.parse(submission);
 
   const res = await fetch(`${base()}/transactions`, {

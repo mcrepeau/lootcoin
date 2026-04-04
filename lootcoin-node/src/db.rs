@@ -17,8 +17,6 @@ const PEERS: TableDefinition<&str, &[u8]> = TableDefinition::new("peers");
 const TICKETS: TableDefinition<u64, &[u8]> = TableDefinition::new("tickets");
 /// key: block index (u64), value: bincode-encoded Block
 const BLOCKS: TableDefinition<u64, &[u8]> = TableDefinition::new("blocks");
-/// key: tx signature bytes, value: block index — permanent replay-protection log
-const CONFIRMED_SIGS: TableDefinition<&[u8], u64> = TableDefinition::new("confirmed_sigs");
 /// key: block index (u64), value: bincode-encoded Vec<(receiver, amount)>
 /// Stores lottery payouts per block so they can be surfaced in the TX_INDEX as
 /// synthetic "sender=lottery" entries visible in the explorer and wallet history.
@@ -70,7 +68,6 @@ impl Db {
             wtxn.open_table(PEERS)?;
             wtxn.open_table(TICKETS)?;
             wtxn.open_table(BLOCKS)?;
-            wtxn.open_table(CONFIRMED_SIGS)?;
             wtxn.open_table(LOTTERY_PAYOUTS)?;
             wtxn.open_table(MEMPOOL)?;
             wtxn.open_table(CHECKPOINTS)?;
@@ -91,7 +88,6 @@ impl Db {
             wtxn.open_table(PEERS)?;
             wtxn.open_table(TICKETS)?;
             wtxn.open_table(BLOCKS)?;
-            wtxn.open_table(CONFIRMED_SIGS)?;
             wtxn.open_table(LOTTERY_PAYOUTS)?;
             wtxn.open_table(MEMPOOL)?;
             wtxn.open_table(CHECKPOINTS)?;
@@ -148,7 +144,7 @@ impl Db {
     }
 
     /// Persist a newly applied block atomically: BLOCKS + TX_INDEX +
-    /// CONFIRMED_SIGS + TICKETS all in a single write transaction.
+    /// TICKETS all in a single write transaction.
     /// If the process crashes mid-write, redb rolls back the whole transaction,
     /// leaving the DB in the state before this block was applied.
     pub fn save_applied_block(
@@ -161,7 +157,6 @@ impl Db {
         {
             let mut blocks_table = wtxn.open_table(BLOCKS)?;
             let mut tx_table = wtxn.open_table(TX_INDEX)?;
-            let mut sigs_table = wtxn.open_table(CONFIRMED_SIGS)?;
             let mut tickets_table = wtxn.open_table(TICKETS)?;
             let mut lp_table = wtxn.open_table(LOTTERY_PAYOUTS)?;
 
@@ -180,12 +175,7 @@ impl Db {
                 }
             }
 
-            // 3. Confirmed signatures (for replay protection)
-            for tx in block.transactions.iter().filter(|tx| !tx.sender.is_empty()) {
-                sigs_table.insert(tx.signature.as_slice(), block.index)?;
-            }
-
-            // 4. Pending lottery tickets (full replace)
+            // 3. Pending lottery tickets (full replace)
             let ticket_keys: Vec<u64> = tickets_table
                 .range::<u64>(..)?
                 .map(|e| e.map(|(k, _)| k.value()))
@@ -341,7 +331,6 @@ impl Db {
         {
             let mut blocks_table = wtxn.open_table(BLOCKS)?;
             let mut tx_table = wtxn.open_table(TX_INDEX)?;
-            let mut sigs_table = wtxn.open_table(CONFIRMED_SIGS)?;
             let mut tickets_table = wtxn.open_table(TICKETS)?;
             let mut lp_table = wtxn.open_table(LOTTERY_PAYOUTS)?;
 
@@ -368,7 +357,6 @@ impl Db {
                     if !tx.sender.is_empty() {
                         let sender_key = make_tx_key(&tx.sender, block.index, tx_pos);
                         tx_table.remove(sender_key.as_slice())?;
-                        sigs_table.remove(tx.signature.as_slice())?;
                     }
                 }
             }
@@ -386,7 +374,6 @@ impl Db {
                     if !tx.sender.is_empty() {
                         let sender_key = make_tx_key(&tx.sender, block.index, tx_pos);
                         tx_table.insert(sender_key.as_slice(), value.as_slice())?;
-                        sigs_table.insert(tx.signature.as_slice(), block.index)?;
                     }
                 }
 
@@ -426,9 +413,9 @@ impl Db {
         Ok(())
     }
 
-    /// Deep-reorg fallback: rebuild TX_INDEX + CONFIRMED_SIGS + TICKETS from
-    /// scratch in a single write transaction. Called after reorgs whose common
-    /// ancestor lies before the in-memory window.
+    /// Deep-reorg fallback: rebuild TX_INDEX + TICKETS from scratch in a single
+    /// write transaction. Called after reorgs whose common ancestor lies before
+    /// the in-memory window.
     pub fn rebuild_indices_with_tickets(
         &self,
         tickets: &[LootTicket],
@@ -438,7 +425,6 @@ impl Db {
         let wtxn = self.db.begin_write()?;
         {
             let mut tx_table = wtxn.open_table(TX_INDEX)?;
-            let mut sigs_table = wtxn.open_table(CONFIRMED_SIGS)?;
             let mut tickets_table = wtxn.open_table(TICKETS)?;
             let mut lp_table = wtxn.open_table(LOTTERY_PAYOUTS)?;
 
@@ -451,15 +437,6 @@ impl Db {
                 tx_table.remove(k.as_slice())?;
             }
 
-            // Clear CONFIRMED_SIGS
-            let sig_keys: Vec<Vec<u8>> = sigs_table
-                .range::<&[u8]>(..)?
-                .map(|e| e.map(|(k, _)| k.value().to_vec()))
-                .collect::<Result<_, _>>()?;
-            for k in sig_keys {
-                sigs_table.remove(k.as_slice())?;
-            }
-
             // Clear LOTTERY_PAYOUTS
             let lp_keys: Vec<u64> = lp_table
                 .range::<u64>(..)?
@@ -469,7 +446,7 @@ impl Db {
                 lp_table.remove(k)?;
             }
 
-            // Rebuild TX_INDEX + CONFIRMED_SIGS from canonical chain
+            // Rebuild TX_INDEX from canonical chain
             for block in &all_blocks {
                 for (tx_pos, tx) in block.transactions.iter().enumerate() {
                     let value =
@@ -479,7 +456,6 @@ impl Db {
                     if !tx.sender.is_empty() {
                         let sender_key = make_tx_key(&tx.sender, block.index, tx_pos);
                         tx_table.insert(sender_key.as_slice(), value.as_slice())?;
-                        sigs_table.insert(tx.signature.as_slice(), block.index)?;
                     }
                 }
             }
@@ -595,17 +571,6 @@ impl Db {
             });
         }
         Ok(tickets)
-    }
-
-    // -------------------------------------------------------------------------
-    // Confirmed-signature log (replay protection)
-    // -------------------------------------------------------------------------
-
-    /// Returns true if this signature has ever been confirmed on-chain.
-    pub fn is_confirmed_signature(&self, sig: &[u8]) -> Result<bool, Box<dyn std::error::Error>> {
-        let rtxn = self.db.begin_read()?;
-        let table = rtxn.open_table(CONFIRMED_SIGS)?;
-        Ok(table.get(sig)?.is_some())
     }
 
     // -------------------------------------------------------------------------
@@ -1006,23 +971,14 @@ mod tests {
     }
 
     #[test]
-    fn save_applied_block_confirms_user_tx_signature() {
+    fn save_applied_block_indexes_user_tx_sender_and_receiver() {
         let db = db();
         let g = genesis();
         let t = user_tx("alice", "bob", 10, 2, 42);
         let b1 = next_block(&g, vec![t.clone()], 1_700_000_010);
         db.save_applied_block(&b1, &[], &[]).unwrap();
-        assert!(db.is_confirmed_signature(&t.signature).unwrap());
-    }
-
-    #[test]
-    fn save_applied_block_does_not_confirm_coinbase_signature() {
-        let db = db();
-        let g = genesis();
-        let cb = coinbase("miner");
-        let b1 = next_block(&g, vec![cb.clone()], 1_700_000_010);
-        db.save_applied_block(&b1, &[], &[]).unwrap();
-        assert!(!db.is_confirmed_signature(&cb.signature).unwrap());
+        assert_eq!(db.get_transactions_for_address("alice", 0, 10).unwrap().len(), 1);
+        assert_eq!(db.get_transactions_for_address("bob", 0, 10).unwrap().len(), 1);
     }
 
     #[test]
@@ -1134,16 +1090,16 @@ mod tests {
     }
 
     #[test]
-    fn apply_reorg_clears_displaced_confirmed_signature() {
+    fn apply_reorg_clears_displaced_tx_index_entries() {
         let db = db();
         let g = genesis();
         let t = user_tx("alice", "bob", 10, 2, 99);
         let old_b1 = next_block(&g, vec![t.clone()], 1_700_000_010);
         db.save_applied_block(&old_b1, &[], &[]).unwrap();
-        assert!(db.is_confirmed_signature(&t.signature).unwrap());
+        assert_eq!(db.get_transactions_for_address("alice", 0, 10).unwrap().len(), 1);
         let new_b1 = next_block(&g, vec![coinbase("carol")], 1_700_000_015);
         db.apply_reorg_incremental(&[old_b1], &[new_b1], &[], &HashMap::new()).unwrap();
-        assert!(!db.is_confirmed_signature(&t.signature).unwrap());
+        assert!(db.get_transactions_for_address("alice", 0, 10).unwrap().is_empty());
     }
 
     #[test]
@@ -1200,7 +1156,6 @@ mod tests {
         db.rebuild_indices_with_tickets(&[ticket("miner", 1)], &HashMap::new()).unwrap();
         assert_eq!(db.get_transactions_for_address("alice", 0, 10).unwrap().len(), 1);
         assert_eq!(db.get_transactions_for_address("bob", 0, 10).unwrap().len(), 1);
-        assert!(db.is_confirmed_signature(&t.signature).unwrap());
         let tickets = db.load_tickets().unwrap();
         assert_eq!(tickets.len(), 1);
         assert_eq!(tickets[0].miner, "miner");
@@ -1322,13 +1277,6 @@ mod tests {
         let totals = db.scan_lottery_payout_totals().unwrap();
         assert_eq!(totals["small"], (2, 300));
         assert_eq!(totals["jackpot"], (1, 500));
-    }
-
-    // ── Confirmed-signature log ───────────────────────────────────────────────
-
-    #[test]
-    fn is_confirmed_signature_false_for_unknown() {
-        assert!(!db().is_confirmed_signature(&[1, 2, 3]).unwrap());
     }
 
     // ── Peers ─────────────────────────────────────────────────────────────────

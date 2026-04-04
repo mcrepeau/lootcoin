@@ -347,6 +347,7 @@ async fn fetch_peer_snapshot(
 
         let state = blockchain::CheckpointState {
             balances: payload.balances,
+            account_nonces: payload.account_nonces,
             pot: payload.pot,
             chain_work,
             block_hash: cp_block.hash.clone(),
@@ -693,21 +694,25 @@ async fn main() {
     let db = Arc::new(db);
     let gossip = Arc::new(gossip);
 
-    // 9a. Restore persisted mempool entries, dropping any that are now confirmed
-    //     or have expired beyond the TX_EXPIRY_BLOCKS window.
-    let current_height = chain.read().await.get_height();
+    // 9a. Restore persisted mempool entries, dropping any with stale nonces
+    //     (already confirmed) or that have expired beyond TX_EXPIRY_BLOCKS.
     let mut mempool = mempool::Mempool::new(Some(Arc::clone(&db)));
     match db.load_mempool() {
         Ok(entries) => {
-            let confirmed_filtered: Vec<_> = entries
-                .into_iter()
-                .filter(|(tx, added_height)| {
-                    let is_confirmed = db.is_confirmed_signature(&tx.signature).unwrap_or(false);
-                    let is_expired =
-                        current_height.saturating_sub(*added_height) > mempool::TX_EXPIRY_BLOCKS;
-                    !is_confirmed && !is_expired
-                })
-                .collect();
+            let current_height = chain.read().await.get_height();
+            let confirmed_filtered: Vec<_> = {
+                let c = chain.read().await;
+                entries
+                    .into_iter()
+                    .filter(|(tx, added_height)| {
+                        // Drop txs whose nonce has already been consumed on-chain.
+                        let is_stale = c.get_nonce(&tx.sender) > tx.nonce;
+                        let is_expired = current_height.saturating_sub(*added_height)
+                            > mempool::TX_EXPIRY_BLOCKS;
+                        !is_stale && !is_expired
+                    })
+                    .collect()
+            };
             let restored = confirmed_filtered.len();
             mempool.restore(confirmed_filtered);
             info!("Restored {} pending mempool transaction(s)", restored);

@@ -154,10 +154,11 @@ impl Wallet {
     }
 
     /// Build and sign a transaction, returning a JSON string ready for
-    /// POST /transactions. The nonce is generated randomly by core.
+    /// POST /transactions. `nonce` must equal `next_nonce` from the node's
+    /// GET /balance/{address} response.
     #[wasm_bindgen]
-    pub fn sign_transaction(&self, receiver: &str, amount: u64, fee: u64) -> String {
-        let tx = Transaction::new_signed(&self.inner, receiver.to_string(), amount, fee);
+    pub fn sign_transaction(&self, receiver: &str, amount: u64, fee: u64, nonce: u64) -> String {
+        let tx = Transaction::new_signed(&self.inner, receiver.to_string(), amount, fee, nonce);
         let submission = TxSubmission {
             sender: tx.sender,
             receiver: tx.receiver,

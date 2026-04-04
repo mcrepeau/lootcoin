@@ -90,6 +90,8 @@ pub struct BalanceResponse {
     pub balance: u64,
     /// Balance minus pending mempool debits — the amount safely spendable right now.
     pub spendable_balance: u64,
+    /// Next expected nonce for this address. Submit this value in your next transaction.
+    pub next_nonce: u64,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -137,6 +139,7 @@ pub struct SnapshotPayload {
     pub height: u64,
     pub block_hash_hex: String,
     pub balances: HashMap<String, u64>,
+    pub account_nonces: HashMap<String, u64>,
     pub pot: u64,
     pub chain_work_hex: String,
     pub current_difficulty: f64,
@@ -251,14 +254,14 @@ async fn apply_incoming_block(state: &AppState, block: Block) -> Result<bool, &'
                 pool.readd_displaced(
                     &old_block.transactions,
                     |addr| chain.get_balance(addr),
+                    |addr| chain.get_nonce(addr),
                     height,
                 );
             }
             // Remove every transaction confirmed on the new canonical fork, not just
             // the triggering block. In a multi-block reorg, transactions confirmed in
-            // earlier new blocks would otherwise remain in the mempool while their
-            // signatures are in confirmed_signatures, causing every subsequent mined
-            // block to be permanently rejected.
+            // earlier new blocks must be removed so their nonces are no longer
+            // considered pending, preventing stale entries from blocking reassembly.
             for new_block in &new_blocks {
                 pool.remove_included(&new_block.transactions);
             }
@@ -293,14 +296,6 @@ async fn relay_tx_inner(state: &AppState, tx: Transaction) -> bool {
     }
     if !tx.verify() {
         warn!(target: "api", "relayed tx failed signature check");
-        return false;
-    }
-    if state
-        .db
-        .is_confirmed_signature(&tx.signature)
-        .unwrap_or(false)
-    {
-        warn!(target: "api", "relay tx replay attempt rejected");
         return false;
     }
     let (chain_ok, height, confirmed_balance) = {
@@ -403,20 +398,7 @@ pub async fn submit_transaction_handler(
         ));
     }
 
-    // Replay protection: reject signatures already confirmed beyond the in-memory window
-    if state
-        .db
-        .is_confirmed_signature(&tx.signature)
-        .unwrap_or(false)
-    {
-        warn!(target: "api", "tx replay attempt rejected: sig already confirmed");
-        return Err((
-            axum::http::StatusCode::BAD_REQUEST,
-            "transaction already confirmed".into(),
-        ));
-    }
-
-    // Validate fee, replay, and confirmed balance under the chain read lock.
+    // Validate fee, nonce, and confirmed balance under the chain read lock.
     // We also capture the confirmed balance here so we can re-check effective
     // balance (confirmed − pending) under the mempool write lock below.
     let (chain_ok, current_height, confirmed_balance) = {
@@ -504,13 +486,17 @@ pub async fn get_balance_handler(
     State(state): State<AppState>,
     Path(address): Path<String>,
 ) -> Json<BalanceResponse> {
-    let balance = state.chain.read().await.get_balance(&address);
+    let chain = state.chain.read().await;
+    let balance = chain.get_balance(&address);
+    let next_nonce = chain.get_nonce(&address);
+    drop(chain);
     let pending = state.mempool.read().await.pending_debit(&address);
     let spendable_balance = balance.saturating_sub(pending);
     Json(BalanceResponse {
         address,
         balance,
         spendable_balance,
+        next_nonce,
     })
 }
 
@@ -1075,6 +1061,7 @@ pub async fn get_snapshot_handler(
         height,
         block_hash_hex: local_hash,
         balances: cp.balances,
+        account_nonces: cp.account_nonces,
         pot: cp.pot,
         chain_work_hex: format!("{:032x}", cp.chain_work),
         current_difficulty: cp.current_difficulty,
@@ -1291,6 +1278,7 @@ mod tests {
         assert_eq!(body["balance"], 10_000);
         assert_eq!(body["spendable_balance"], 10_000);
         assert_eq!(body["address"], addr);
+        assert_eq!(body["next_nonce"], 0); // no outbound txs yet
     }
 
     #[tokio::test]
@@ -1382,7 +1370,7 @@ mod tests {
         for (i, fee) in [5u64, 10, 20].iter().enumerate() {
             state.mempool.write().await.add_transaction(
                 Transaction {
-                    sender: "a".to_string(),
+                    sender: format!("sender_{}", i),
                     receiver: "b".to_string(),
                     amount: 1,
                     fee: *fee,
@@ -1742,7 +1730,7 @@ mod tests {
     async fn submit_tx_valid_signed_transaction_accepted() {
         let wallet = test_wallet();
         let state = make_state(&wallet);
-        let tx = Transaction::new_signed(&wallet, "bob".to_string(), 100, 2);
+        let tx = Transaction::new_signed(&wallet, "bob".to_string(), 100, 2, 0);
         let resp = post_json(
             state,
             "/transactions",
@@ -1768,7 +1756,7 @@ mod tests {
         let wallet = test_wallet();
         let state = make_state(&wallet);
         // Wallet only has 10_000; try to spend far more
-        let tx = Transaction::new_signed(&wallet, "bob".to_string(), 999_999, 2);
+        let tx = Transaction::new_signed(&wallet, "bob".to_string(), 999_999, 2, 0);
         let resp = post_json(
             state,
             "/transactions",
@@ -1791,7 +1779,7 @@ mod tests {
         let wallet = test_wallet();
         let state = make_state(&wallet);
         // Fee = 1, below MIN_TX_FEE = 2
-        let tx = Transaction::new_signed(&wallet, "bob".to_string(), 10, 1);
+        let tx = Transaction::new_signed(&wallet, "bob".to_string(), 10, 1, 0);
         let resp = post_json(
             state,
             "/transactions",

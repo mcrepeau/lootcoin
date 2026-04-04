@@ -49,6 +49,7 @@ struct ErrorResponse {
 #[derive(Deserialize)]
 struct NodeBalanceResponse {
     spendable_balance: u64,
+    next_nonce: u64,
 }
 
 #[derive(Serialize)]
@@ -148,6 +149,7 @@ async fn handle_dispense(
         req.address.clone(),
         state.dispense_amount,
         state.fee,
+        balance.next_nonce,
     );
 
     let resp = state

@@ -23,8 +23,12 @@ struct MempoolEntry {
     added_height: u64,
 }
 
+/// One pending transaction per sender address (Ethereum-style). Enforcing a
+/// single pending slot per sender keeps nonce validation simple: the chain
+/// always knows exactly which nonce to expect next, and the mempool tracks at
+/// most one in-flight transaction that consumes that slot.
 pub struct Mempool {
-    entries: HashMap<Vec<u8>, MempoolEntry>,
+    entries: HashMap<String, MempoolEntry>, // keyed by sender address
     db: Option<Arc<Db>>,
 }
 
@@ -37,15 +41,25 @@ impl Mempool {
     }
 
     /// Populate the in-memory map from persisted entries without triggering
-    /// write-through (the data is already in the DB).
+    /// write-through (the data is already in the DB). When two persisted
+    /// entries share the same sender, the one with the higher added_height is
+    /// kept (most recently submitted). Coinbase entries are skipped.
     pub fn restore(&mut self, entries: Vec<(Transaction, u64)>) {
         for (tx, added_height) in entries {
+            if tx.sender.is_empty() {
+                continue; // skip coinbase
+            }
             if self.entries.len() >= MAX_MEMPOOL_SIZE {
                 break;
             }
-            let sig = tx.signature.clone();
+            let sender = tx.sender.clone();
             self.entries
-                .entry(sig)
+                .entry(sender)
+                .and_modify(|existing| {
+                    if added_height > existing.added_height {
+                        *existing = MempoolEntry { tx: tx.clone(), added_height };
+                    }
+                })
                 .or_insert(MempoolEntry { tx, added_height });
         }
     }
@@ -55,22 +69,33 @@ impl Mempool {
     }
 
     /// Add a transaction. Returns `false` only if the mempool is full and the
-    /// tx is not already present (idempotent re-submission is always accepted).
+    /// sender has no existing pending slot. Re-submission by the same sender
+    /// replaces the existing entry (nonce bump or fee replacement).
     pub fn add_transaction(&mut self, tx: Transaction, current_height: u64) -> bool {
-        if self.entries.len() >= MAX_MEMPOOL_SIZE && !self.entries.contains_key(&tx.signature) {
+        if tx.sender.is_empty() {
+            return false; // coinbase not allowed in mempool
+        }
+        let sender = tx.sender.clone();
+        if self.entries.len() >= MAX_MEMPOOL_SIZE && !self.entries.contains_key(&sender) {
             return false;
         }
-        let sig = tx.signature.clone();
-        let is_new = !self.entries.contains_key(&sig);
-        self.entries.entry(sig.clone()).or_insert(MempoolEntry {
-            tx: tx.clone(),
-            added_height: current_height,
-        });
-        if is_new {
-            if let Some(db) = &self.db {
-                if let Err(e) = db.save_mempool_tx(&sig, &tx, current_height) {
-                    tracing::warn!("Failed to persist mempool tx: {}", e);
+        let old_sig = self.entries.get(&sender).map(|e| e.tx.signature.clone());
+        let is_replace = old_sig.is_some();
+        self.entries.insert(
+            sender,
+            MempoolEntry {
+                tx: tx.clone(),
+                added_height: current_height,
+            },
+        );
+        if let Some(db) = &self.db {
+            if is_replace {
+                if let Some(sig) = old_sig {
+                    let _ = db.remove_mempool_txs(&[sig]);
                 }
+            }
+            if let Err(e) = db.save_mempool_tx(&tx.signature, &tx, current_height) {
+                tracing::warn!("Failed to persist mempool tx: {}", e);
             }
         }
         true
@@ -80,8 +105,11 @@ impl Mempool {
     pub fn remove_included(&mut self, included: &[Transaction]) {
         let mut removed_sigs: Vec<Vec<u8>> = Vec::new();
         for tx in included {
-            if self.entries.remove(&tx.signature).is_some() {
-                removed_sigs.push(tx.signature.clone());
+            if tx.sender.is_empty() {
+                continue; // coinbase has no mempool slot
+            }
+            if let Some(entry) = self.entries.remove(&tx.sender) {
+                removed_sigs.push(entry.tx.signature.clone());
             }
         }
         if let Some(db) = &self.db {
@@ -94,15 +122,15 @@ impl Mempool {
         }
     }
 
-    /// Drop transactions whose nonce will never be valid again because they
-    /// have been sitting in the pool for more than TX_EXPIRY_BLOCKS blocks.
+    /// Drop transactions that have been sitting in the pool for more than
+    /// TX_EXPIRY_BLOCKS blocks without being included.
     pub fn evict_expired(&mut self, current_height: u64) {
         let mut evicted_sigs: Vec<Vec<u8>> = Vec::new();
-        self.entries.retain(|sig, entry| {
+        self.entries.retain(|_, entry| {
             if current_height.saturating_sub(entry.added_height) <= TX_EXPIRY_BLOCKS {
                 true
             } else {
-                evicted_sigs.push(sig.clone());
+                evicted_sigs.push(entry.tx.signature.clone());
                 false
             }
         });
@@ -124,29 +152,33 @@ impl Mempool {
     }
 
     /// Re-add transactions from a displaced (reorged-away) block that are still
-    /// valid under the new chain state. Skips coinbase txs, txs already in the
-    /// pool, and txs whose sender can no longer afford them.
+    /// valid under the new chain state. Skips coinbase txs, senders that already
+    /// have a pending slot, and txs whose nonce no longer matches the chain.
     pub fn readd_displaced(
         &mut self,
         txs: &[lootcoin_core::transaction::Transaction],
         get_balance: impl Fn(&str) -> u64,
+        get_nonce: impl Fn(&str) -> u64,
         current_height: u64,
     ) {
         for tx in txs {
             if tx.sender.is_empty() {
+                continue; // skip coinbase
+            }
+            if self.entries.contains_key(&tx.sender) {
+                continue; // sender already has a pending slot
+            }
+            // Nonce must match current chain expectation.
+            if tx.nonce != get_nonce(&tx.sender) {
                 continue;
-            } // skip coinbase
-            if self.entries.contains_key(&tx.signature) {
-                continue;
-            } // already present
+            }
             let cost = tx.amount.saturating_add(tx.fee);
-            let already_pending = self.pending_debit(&tx.sender);
             let balance = get_balance(&tx.sender);
-            if balance.saturating_sub(already_pending) < cost {
-                continue;
-            } // can't afford
+            if balance < cost {
+                continue; // can't afford
+            }
             self.entries.insert(
-                tx.signature.clone(),
+                tx.sender.clone(),
                 MempoolEntry {
                     tx: tx.clone(),
                     added_height: current_height,
@@ -155,15 +187,13 @@ impl Mempool {
         }
     }
 
-    /// Sum of `amount + fee` for all pending txs from `sender`.
-    /// Used to compute the sender's effective spendable balance.
+    /// The pending debit for `sender`: `amount + fee` of their single pending
+    /// transaction, or 0 if they have no pending slot.
     pub fn pending_debit(&self, sender: &str) -> u64 {
         self.entries
-            .values()
-            .filter(|e| e.tx.sender == sender)
-            .fold(0u64, |acc, e| {
-                acc.saturating_add(e.tx.amount.saturating_add(e.tx.fee))
-            })
+            .get(sender)
+            .map(|e| e.tx.amount.saturating_add(e.tx.fee))
+            .unwrap_or(0)
     }
 
     /// Returns fee distribution statistics across all pending transactions.
@@ -239,8 +269,18 @@ mod tests {
         let mut pool = Mempool::new(None);
         let tx = make_tx(1, "alice", 100, 10);
         pool.add_transaction(tx.clone(), 0);
-        pool.add_transaction(tx, 5); // same signature — should not duplicate
+        pool.add_transaction(tx, 5); // same sender — replaces, still 1 entry
         assert_eq!(pool.len(), 1);
+    }
+
+    #[test]
+    fn add_transaction_replaces_existing_for_same_sender() {
+        let mut pool = Mempool::new(None);
+        pool.add_transaction(make_tx(1, "alice", 100, 10), 0);
+        pool.add_transaction(make_tx(2, "alice", 200, 20), 1); // replaces
+        assert_eq!(pool.len(), 1);
+        // The new tx's fee should be reflected.
+        assert_eq!(pool.pending_debit("alice"), 220);
     }
 
     #[test]
@@ -291,12 +331,11 @@ mod tests {
     }
 
     #[test]
-    fn pending_debit_sums_amount_plus_fee_per_sender() {
+    fn pending_debit_returns_amount_plus_fee_for_sender() {
         let mut pool = Mempool::new(None);
         pool.add_transaction(make_tx(1, "alice", 100, 10), 0); // debit 110
-        pool.add_transaction(make_tx(2, "alice", 50, 5), 0); // debit 55
-        pool.add_transaction(make_tx(3, "bob", 200, 20), 0); // not alice
-        assert_eq!(pool.pending_debit("alice"), 165);
+        pool.add_transaction(make_tx(2, "bob", 200, 20), 0); // not alice
+        assert_eq!(pool.pending_debit("alice"), 110);
         assert_eq!(pool.pending_debit("bob"), 220);
         assert_eq!(pool.pending_debit("carol"), 0);
     }
@@ -310,7 +349,7 @@ mod tests {
     #[test]
     fn readd_displaced_skips_coinbase() {
         let mut pool = Mempool::new(None);
-        pool.readd_displaced(&[coinbase(1)], |_| 1000, 10);
+        pool.readd_displaced(&[coinbase(1)], |_| 1000, |_| 0, 10);
         assert_eq!(pool.len(), 0);
     }
 
@@ -319,7 +358,7 @@ mod tests {
         let mut pool = Mempool::new(None);
         let tx = make_tx(1, "alice", 100, 10);
         pool.add_transaction(tx.clone(), 0);
-        pool.readd_displaced(&[tx], |_| 1000, 10);
+        pool.readd_displaced(&[tx], |_| 1000, |_| 0, 10);
         assert_eq!(pool.len(), 1); // still 1, not 2
     }
 
@@ -327,26 +366,34 @@ mod tests {
     fn readd_displaced_skips_unaffordable() {
         let mut pool = Mempool::new(None);
         let tx = make_tx(1, "alice", 100, 10); // cost = 110
-        pool.readd_displaced(&[tx], |_| 50, 10); // balance 50 < 110
+        pool.readd_displaced(&[tx], |_| 50, |_| 0, 10); // balance 50 < 110
+        assert_eq!(pool.len(), 0);
+    }
+
+    #[test]
+    fn readd_displaced_skips_stale_nonce() {
+        let mut pool = Mempool::new(None);
+        let tx = make_tx(1, "alice", 100, 10); // nonce = 0
+        // chain nonce is now 1 (tx was already confirmed), so nonce 0 is stale
+        pool.readd_displaced(&[tx], |_| 1000, |_| 1, 10);
         assert_eq!(pool.len(), 0);
     }
 
     #[test]
     fn readd_displaced_adds_affordable_tx() {
         let mut pool = Mempool::new(None);
-        let tx = make_tx(1, "alice", 100, 10); // cost = 110
-        pool.readd_displaced(&[tx], |_| 200, 10); // balance 200 >= 110
+        let tx = make_tx(1, "alice", 100, 10); // cost = 110, nonce = 0
+        pool.readd_displaced(&[tx], |_| 200, |_| 0, 10); // balance 200 >= 110, nonce matches
         assert_eq!(pool.len(), 1);
     }
 
     #[test]
-    fn readd_displaced_accounts_for_existing_pending_debit() {
+    fn readd_displaced_accounts_for_existing_pending_slot() {
         let mut pool = Mempool::new(None);
-        // alice already has a pending tx costing 150
-        pool.add_transaction(make_tx(9, "alice", 140, 10), 0); // pending debit = 150
-                                                               // try to re-add a tx costing 60; balance=200, effective=200-150=50 < 60 → skip
-        let tx = make_tx(1, "alice", 55, 5); // cost = 60
-        pool.readd_displaced(&[tx], |_| 200, 10);
+        // alice already has a pending tx — displaced tx for same sender is skipped
+        pool.add_transaction(make_tx(9, "alice", 140, 10), 0);
+        let tx = make_tx(1, "alice", 55, 5);
+        pool.readd_displaced(&[tx], |_| 200, |_| 0, 10);
         assert_eq!(pool.len(), 1); // only the original pending tx
     }
 
