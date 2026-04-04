@@ -855,11 +855,17 @@ impl Blockchain {
             // Does this fork have more work than the current main chain from
             // the ancestor to the tip?
             //
-            // When the ancestor is within the in-memory window we can compute
-            // exact work from the actual block hashes.  For deep ancestors
-            // (before the window) we fall back to height — deep reorgs are
-            // extremely rare and loading all historical hashes from DB here
-            // would be disproportionately expensive.
+            // When the ancestor is within the in-memory window we compute
+            // exact work from the in-memory block hashes.  For deep ancestors
+            // (before the window) we load the pre-window segment from the DB
+            // and combine it with the in-memory portion.
+            //
+            // Note: with current constants (REORG_WINDOW=100, MAX_ORPHAN_DEPTH=10)
+            // a deep-ancestor fork tip is at most ancestor_index+10, while the
+            // main chain tip is at height ≥ blocks_offset ≥ ancestor_index+100,
+            // so the comparison always returns false in practice. Computing it
+            // from actual block hashes is more principled than a height proxy
+            // and stays correct if the constants ever change.
             let fork_beats_main = if ancestor_index >= self.blocks_offset {
                 let main_work: u128 = self
                     .blocks
@@ -868,9 +874,26 @@ impl Blockchain {
                     .map(|b| Self::block_work(&b.hash))
                     .fold(0u128, |acc, w| acc.saturating_add(w));
                 fork_work > main_work
+            } else if let Some(d) = db {
+                // Load the pre-window segment from the DB.
+                let count = (self.blocks_offset.saturating_sub(ancestor_index + 1)) as usize;
+                let pre_window_work: u128 = d
+                    .get_blocks_range(ancestor_index + 1, count)
+                    .unwrap_or_default()
+                    .iter()
+                    .map(|b| Self::block_work(&b.hash))
+                    .fold(0u128, |acc, w| acc.saturating_add(w));
+                // All in-memory blocks are after the ancestor (blocks_offset > ancestor_index).
+                let window_work: u128 = self
+                    .blocks
+                    .iter()
+                    .map(|b| Self::block_work(&b.hash))
+                    .fold(0u128, |acc, w| acc.saturating_add(w));
+                fork_work > pre_window_work.saturating_add(window_work)
             } else {
-                // Deep-ancestor fallback: height proxy.
-                ancestor_index + 1 + fork_chain.len() as u64 > self.get_height()
+                // No DB available (tests / startup replay with no deep history).
+                // Conservatively reject — in-memory state is incomplete anyway.
+                false
             };
 
             if !fork_beats_main {
