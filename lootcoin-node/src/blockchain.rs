@@ -364,9 +364,13 @@ impl Blockchain {
     }
 
     fn loot_bucket_from_digest(digest: &[u8]) -> u32 {
-        let mut b = [0u8; 4];
-        b.copy_from_slice(&digest[0..4]);
-        u32::from_le_bytes(b) % PPM
+        // Use 8 bytes (u64) instead of 4 (u32) to reduce modular bias.
+        // With u32: 2^32 mod 1_000_000 = 967_296 → ~0.023% advantage for the
+        // bottom bucket range. With u64: 2^64 mod 1_000_000 = 551_616 → bias
+        // is ~3×10⁻¹¹, negligible at any realistic lottery volume.
+        let mut b = [0u8; 8];
+        b.copy_from_slice(&digest[0..8]);
+        (u64::from_le_bytes(b) % PPM as u64) as u32
     }
 
     /// Look up a block hash by absolute index from the in-memory window.

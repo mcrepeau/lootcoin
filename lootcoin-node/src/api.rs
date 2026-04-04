@@ -28,7 +28,7 @@ use crate::mempool::{FeeStats, Mempool};
 use crate::metrics::Metrics;
 use lootcoin_core::block::MAX_BLOCK_TXS;
 use lootcoin_core::{
-    block::{meets_difficulty, Block},
+    block::Block,
     transaction::Transaction,
 };
 use std::collections::HashMap;
@@ -223,11 +223,12 @@ async fn apply_incoming_block(state: &AppState, block: Block) -> Result<bool, &'
     let candidate = block.clone();
     let mut chain = state.chain.write().await;
 
-    let diff = chain.get_difficulty();
-    if !meets_difficulty(&block.hash, diff) {
-        return Err("block does not meet difficulty");
-    }
-
+    // Do not pre-filter by current main-chain difficulty here. The internal
+    // apply_in_memory → update_state / validate_block_standalone paths each
+    // compute the correct required difficulty for their respective code paths:
+    // update_state uses current_difficulty for main-chain blocks, while
+    // validate_block_standalone uses expected_difficulty_for() so that orphan
+    // blocks on a slow fork (lower difficulty) are not incorrectly rejected.
     let outcome = chain.apply_block(&state.db, block);
     let height = chain.get_height();
 
@@ -343,6 +344,14 @@ pub async fn submit_transaction_handler(
         return Err((
             axum::http::StatusCode::BAD_REQUEST,
             "the receiver must be different from the sender".to_string(),
+        ));
+    }
+
+    if !is_valid_address(&req.receiver) {
+        warn!(target: "api", "invalid tx: malformed receiver address");
+        return Err((
+            axum::http::StatusCode::BAD_REQUEST,
+            "invalid receiver address".to_string(),
         ));
     }
 
@@ -852,6 +861,25 @@ pub struct AddPeerRequest {
 pub async fn get_peers_handler(State(state): State<AppState>) -> Json<PeersResponse> {
     let peers = state.gossip.peer_urls().await;
     Json(PeersResponse { peers })
+}
+
+/// Returns `true` if `addr` is a structurally valid Lootcoin address.
+///
+/// A valid address is bech32m with HRP "loot":
+///   "loot1" prefix + 58 characters from the bech32 charset (32 payload + 6 checksum).
+///
+/// This validates structure only — the bech32m checksum is not verified here.
+/// It is sufficient to prevent accidental burns to garbage strings while keeping
+/// the check dependency-free.
+pub fn is_valid_address(addr: &str) -> bool {
+    // bech32 charset: the 32 symbols used in the data part (excludes b, i, o, 1 to
+    // avoid visual ambiguity). The separator "1" is between the HRP and data part.
+    const BECH32_CHARSET: &[u8] = b"qpzry9x8gf2tvdw0s3jn54khce6mua7l";
+    // A 32-byte (256-bit) hash encodes to 52 payload chars + 6 checksum chars = 58.
+    // Total address length: len("loot1") + 58 = 63.
+    addr.len() == 63
+        && addr.starts_with("loot1")
+        && addr[5..].bytes().all(|c| BECH32_CHARSET.contains(&c))
 }
 
 /// Returns `true` if `raw_url` is a safe peer URL to connect to.
@@ -1719,7 +1747,9 @@ mod tests {
     async fn submit_tx_valid_signed_transaction_accepted() {
         let wallet = test_wallet();
         let state = make_state(&wallet);
-        let tx = Transaction::new_signed(&wallet, "bob".to_string(), 100, 2, 0);
+        // Use a valid lootcoin address as receiver (derived from a fixed key so the test is deterministic).
+        let receiver_addr = Wallet::from_secret_key_bytes([2u8; 32]).get_address();
+        let tx = Transaction::new_signed(&wallet, receiver_addr, 100, 2, 0);
         let resp = post_json(
             state,
             "/transactions",
@@ -1736,7 +1766,7 @@ mod tests {
         .await;
         assert_eq!(resp.status(), StatusCode::OK);
         let body = json_body(resp).await;
-        assert_eq!(body["receiver"], "bob");
+        assert_eq!(body["receiver"], tx.receiver);
         assert_eq!(body["amount"], 100);
     }
 
@@ -1996,5 +2026,75 @@ mod tests {
     fn safe_url_accepts_public_ipv4() {
         assert!(is_safe_peer_url("http://8.8.8.8:3000"));
         assert!(is_safe_peer_url("http://1.2.3.4"));
+    }
+
+    // ── is_valid_address ──────────────────────────────────────────────────────
+
+    #[test]
+    fn valid_address_accepts_known_vector() {
+        // Known derivation test vector from derivation.rs
+        assert!(is_valid_address(
+            "loot1hd9xz3rfdflaegwlvpqhg6rpftvwl4mt678kg9kf6nnengm8celsw7dnkm"
+        ));
+    }
+
+    #[test]
+    fn valid_address_rejects_empty() {
+        assert!(!is_valid_address(""));
+    }
+
+    #[test]
+    fn valid_address_rejects_wrong_hrp() {
+        assert!(!is_valid_address(
+            "btc1hd9xz3rfdflaegwlvpqhg6rpftvwl4mt678kg9kf6nnengm8celsw7dnkm"
+        ));
+    }
+
+    #[test]
+    fn valid_address_rejects_garbage_string() {
+        assert!(!is_valid_address("garbage"));
+        assert!(!is_valid_address("loot1"));
+    }
+
+    #[test]
+    fn valid_address_rejects_wrong_length() {
+        // One character short
+        assert!(!is_valid_address(
+            "loot1hd9xz3rfdflaegwlvpqhg6rpftvwl4mt678kg9kf6nnengm8celsw7dnk"
+        ));
+        // One character too long
+        assert!(!is_valid_address(
+            "loot1hd9xz3rfdflaegwlvpqhg6rpftvwl4mt678kg9kf6nnengm8celsw7dnkma"
+        ));
+    }
+
+    #[test]
+    fn valid_address_rejects_invalid_charset() {
+        // 'b' is not in the bech32 charset
+        assert!(!is_valid_address(
+            "loot1bd9xz3rfdflaegwlvpqhg6rpftvwl4mt678kg9kf6nnengm8celsw7dnkm"
+        ));
+    }
+
+    #[tokio::test]
+    async fn submit_tx_invalid_receiver_address_returns_400() {
+        let wallet = test_wallet();
+        let state = make_state(&wallet);
+        let tx = Transaction::new_signed(&wallet, "not-an-address".to_string(), 100, 2, 0);
+        let resp = post_json(
+            state,
+            "/transactions",
+            serde_json::json!({
+                "sender": tx.sender,
+                "receiver": tx.receiver,
+                "amount": tx.amount,
+                "fee": tx.fee,
+                "nonce": tx.nonce,
+                "public_key_hex": hex::encode(tx.public_key),
+                "signature_hex": hex::encode(&tx.signature),
+            }),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
     }
 }

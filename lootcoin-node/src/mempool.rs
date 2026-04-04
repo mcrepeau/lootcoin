@@ -187,6 +187,11 @@ impl Mempool {
                     added_height: current_height,
                 },
             );
+            if let Some(db) = &self.db {
+                if let Err(e) = db.save_mempool_tx(&tx.signature, &tx, current_height) {
+                    tracing::warn!("Failed to persist re-added displaced tx: {}", e);
+                }
+            }
         }
     }
 
