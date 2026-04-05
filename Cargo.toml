@@ -7,6 +7,9 @@ members = [
 ]
 resolver = "2"
 
+[workspace.dependencies]
+lootcoin-core = { path = "../lootcoin-core" }
+
 [workspace.package]
 version = "1.4.2"
 edition = "2021"

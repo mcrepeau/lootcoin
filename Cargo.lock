@@ -871,9 +871,7 @@ checksum = "5e5032e24019045c762d3c0f28f5b6b8bbf38563a65908389bf7978758920897"
 
 [[package]]
 name = "lootcoin-core"
-version = "1.4.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "389a8ceb5617eaf9c79382814aafff370c59fab8fc613f7af509d0ca8e4d2b75"
+version = "2.0.0"
 dependencies = [
  "bech32",
  "bincode",
