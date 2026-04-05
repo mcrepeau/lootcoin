@@ -190,6 +190,10 @@ pub struct BlockView {
 async fn apply_incoming_block(state: &AppState, block: Block) -> Result<bool, &'static str> {
     let tx_count = block.transactions.len();
 
+    if tx_count == 0 {
+        return Err("block has no transactions");
+    }
+
     if tx_count > MAX_BLOCK_TXS + 1 {
         return Err("too many transactions in block");
     }
@@ -1899,6 +1903,26 @@ mod tests {
             nonce: 0,
             tx_root,
             transactions: txs,
+            hash: vec![],
+        };
+        b.hash = b.calculate_hash();
+        drop(chain);
+        let resp = post_json(state, "/blocks", serde_json::json!(b)).await;
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn submit_block_empty_transactions_returns_400() {
+        let wallet = test_wallet();
+        let state = make_state(&wallet);
+        let chain = state.chain.read().await;
+        let mut b = Block {
+            index: chain.get_height(),
+            previous_hash: chain.get_latest_hash(),
+            timestamp: now_secs(),
+            nonce: 0,
+            tx_root: Block::compute_tx_root(&[]),
+            transactions: vec![],
             hash: vec![],
         };
         b.hash = b.calculate_hash();
