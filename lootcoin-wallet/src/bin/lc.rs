@@ -127,6 +127,7 @@ struct TxSubmission {
 #[derive(Deserialize)]
 struct TxRecord {
     block_index: u64,
+    txid_hex: Option<String>,
     sender: String,
     receiver: String,
     amount: u64,
@@ -356,10 +357,10 @@ fn cmd_history(
     }
 
     println!(
-        "{:<8}  {:<7}  {:>12}  {:>5}  COUNTERPART",
-        "BLOCK", "TYPE", "AMOUNT", "FEE"
+        "{:<8}  {:<7}  {:>12}  {:>5}  {:<20}  COUNTERPART",
+        "BLOCK", "TYPE", "AMOUNT", "FEE", "TXID"
     );
-    println!("{}", "─".repeat(72));
+    println!("{}", "─".repeat(92));
 
     for r in &records {
         let (label, sign, counterpart) = if r.sender.is_empty() {
@@ -372,12 +373,19 @@ fn cmd_history(
             ("IN", "+", abbrev(&r.sender))
         };
 
+        let txid_short = r
+            .txid_hex
+            .as_deref()
+            .map(|h| format!("{}…{}", &h[..8], &h[h.len() - 4..]))
+            .unwrap_or_default();
+
         println!(
-            "{:<8}  {:<7}  {:>12}  {:>5}  {}",
+            "{:<8}  {:<7}  {:>12}  {:>5}  {:<20}  {}",
             r.block_index,
             label,
             format!("{}{}", sign, r.amount),
             r.fee,
+            txid_short,
             counterpart
         );
     }

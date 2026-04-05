@@ -77,6 +77,7 @@ pub struct SubmitTransactionRequest {
 
 #[derive(Serialize)]
 pub struct SubmitTransactionResponse {
+    pub txid_hex: String,
     pub sender: String,
     pub receiver: String,
     pub amount: u64,
@@ -455,6 +456,7 @@ pub async fn submit_transaction_handler(
     );
     state.gossip.publish_transaction(&tx).await;
     Ok(Json(SubmitTransactionResponse {
+        txid_hex: hex::encode(tx.txid()),
         sender: tx.sender,
         receiver: tx.receiver,
         amount: tx.amount,

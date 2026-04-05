@@ -82,8 +82,11 @@ impl Mempool {
         if self.entries.len() >= MAX_MEMPOOL_SIZE && !self.entries.contains_key(&sender) {
             return false;
         }
-        let old_sig = self.entries.get(&sender).map(|e| e.tx.signature.clone());
-        let is_replace = old_sig.is_some();
+        let old_txid = self
+            .entries
+            .get(&sender)
+            .map(|e| e.tx.txid().to_vec());
+        let is_replace = old_txid.is_some();
         self.entries.insert(
             sender,
             MempoolEntry {
@@ -93,11 +96,11 @@ impl Mempool {
         );
         if let Some(db) = &self.db {
             if is_replace {
-                if let Some(sig) = old_sig {
-                    let _ = db.remove_mempool_txs(&[sig]);
+                if let Some(txid) = old_txid {
+                    let _ = db.remove_mempool_txs(&[txid]);
                 }
             }
-            if let Err(e) = db.save_mempool_tx(&tx.signature, &tx, current_height) {
+            if let Err(e) = db.save_mempool_tx(&tx, current_height) {
                 tracing::warn!("Failed to persist mempool tx: {}", e);
             }
         }
@@ -106,17 +109,17 @@ impl Mempool {
 
     /// Remove every transaction that was included in a block.
     pub fn remove_included(&mut self, included: &[Transaction]) {
-        let mut removed_sigs: Vec<Vec<u8>> = Vec::new();
+        let mut removed_txids: Vec<Vec<u8>> = Vec::new();
         for tx in included {
             if tx.sender.is_empty() {
                 continue; // coinbase has no mempool slot
             }
             if let Some(entry) = self.entries.remove(&tx.sender) {
-                removed_sigs.push(entry.tx.signature.clone());
+                removed_txids.push(entry.tx.txid().to_vec());
             }
         }
         if let Some(db) = &self.db {
-            if let Err(e) = db.remove_mempool_txs(&removed_sigs) {
+            if let Err(e) = db.remove_mempool_txs(&removed_txids) {
                 tracing::warn!(
                     "Failed to remove confirmed txs from persisted mempool: {}",
                     e
@@ -128,17 +131,17 @@ impl Mempool {
     /// Drop transactions that have been sitting in the pool for more than
     /// TX_EXPIRY_BLOCKS blocks without being included.
     pub fn evict_expired(&mut self, current_height: u64) {
-        let mut evicted_sigs: Vec<Vec<u8>> = Vec::new();
+        let mut evicted_txids: Vec<Vec<u8>> = Vec::new();
         self.entries.retain(|_, entry| {
             if current_height.saturating_sub(entry.added_height) <= TX_EXPIRY_BLOCKS {
                 true
             } else {
-                evicted_sigs.push(entry.tx.signature.clone());
+                evicted_txids.push(entry.tx.txid().to_vec());
                 false
             }
         });
         if let Some(db) = &self.db {
-            if let Err(e) = db.remove_mempool_txs(&evicted_sigs) {
+            if let Err(e) = db.remove_mempool_txs(&evicted_txids) {
                 tracing::warn!("Failed to remove evicted txs from persisted mempool: {}", e);
             }
         }
@@ -188,7 +191,7 @@ impl Mempool {
                 },
             );
             if let Some(db) = &self.db {
-                if let Err(e) = db.save_mempool_tx(&tx.signature, &tx, current_height) {
+                if let Err(e) = db.save_mempool_tx(&tx, current_height) {
                     tracing::warn!("Failed to persist re-added displaced tx: {}", e);
                 }
             }

@@ -20,8 +20,11 @@ pub struct Wallet {
 /// JSON payload expected by POST /transactions.
 /// Matches `SubmitTransactionRequest` in the node API — hex-encodes the byte
 /// fields so they round-trip cleanly through JSON.
+/// `txid_hex` is an extra convenience field: the node ignores it on receipt
+/// but the browser can surface it immediately so the user can track the tx.
 #[derive(Serialize)]
 struct TxSubmission {
+    txid_hex: String,
     sender: String,
     receiver: String,
     amount: u64,
@@ -116,6 +119,7 @@ impl Wallet {
     pub fn sign_transaction(&self, receiver: &str, amount: u64, fee: u64, nonce: u64) -> String {
         let tx = Transaction::new_signed(&self.inner, receiver.to_string(), amount, fee, nonce);
         let submission = TxSubmission {
+            txid_hex: hex::encode(tx.txid()),
             sender: tx.sender,
             receiver: tx.receiver,
             amount: tx.amount,

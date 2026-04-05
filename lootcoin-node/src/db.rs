@@ -3,14 +3,16 @@ use std::fs;
 
 type LotteryPayoutsMap = HashMap<u64, Vec<(String, u64, String)>>;
 
+use cubehash::CubeHash256;
 use lootcoin_core::block::Block;
+use lootcoin_core::transaction::Transaction;
 use redb::{Database as RedbDatabase, ReadableTable, TableDefinition};
 use serde::Serialize;
 
 use crate::loot_ticket::LootTicket;
 
 // key:   address_bytes + 0x00 + block_index (8 bytes BE) + tx_pos (4 bytes BE)
-// value: bincode of (sender, receiver, amount, fee)
+// value: bincode of (sender, receiver, amount, fee, txid_hex)
 const TX_INDEX: TableDefinition<&[u8], &[u8]> = TableDefinition::new("tx_index");
 const PEERS: TableDefinition<&str, &[u8]> = TableDefinition::new("peers");
 /// key: created_height (u64), value: bincode-encoded miner: String
@@ -31,6 +33,7 @@ const CHECKPOINTS: TableDefinition<u64, &[u8]> = TableDefinition::new("checkpoin
 #[derive(Serialize)]
 pub struct TxRecord {
     pub block_index: u64,
+    pub txid_hex: String,
     pub sender: String,
     pub receiver: String,
     pub amount: u64,
@@ -147,6 +150,41 @@ impl Db {
     /// TICKETS all in a single write transaction.
     /// If the process crashes mid-write, redb rolls back the whole transaction,
     /// leaving the DB in the state before this block was applied.
+    /// Serialize the TX_INDEX value for a regular transaction (coinbase or user).
+    /// Coinbase txids incorporate the block index and position to prevent
+    /// collisions when the same miner mines multiple blocks with identical coinbase
+    /// content (same receiver, same reward).
+    fn make_tx_value(
+        tx: &Transaction,
+        block_index: u64,
+        tx_pos: usize,
+    ) -> Result<Vec<u8>, bincode::Error> {
+        let txid_hex = if tx.sender.is_empty() {
+            let data =
+                bincode::serialize(&(b"coinbase" as &[u8], block_index, tx_pos as u32))?;
+            hex::encode(CubeHash256::digest(&data))
+        } else {
+            hex::encode(tx.txid())
+        };
+        bincode::serialize(&(&tx.sender, &tx.receiver, &tx.amount, &tx.fee, &txid_hex))
+    }
+
+    /// Serialize the TX_INDEX value for a synthetic lottery payout entry.
+    fn make_lottery_value(
+        receiver: &str,
+        amount: u64,
+        block_index: u64,
+        payout_pos: usize,
+    ) -> Result<Vec<u8>, bincode::Error> {
+        let data = bincode::serialize(&(
+            b"lottery" as &[u8],
+            block_index,
+            payout_pos as u32,
+        ))?;
+        let txid_hex = hex::encode(CubeHash256::digest(&data));
+        bincode::serialize(&("lottery", receiver, amount, 0u64, &txid_hex))
+    }
+
     pub fn save_applied_block(
         &self,
         block: &Block,
@@ -166,7 +204,7 @@ impl Db {
 
             // 2. TX index (sender + receiver keys)
             for (tx_pos, tx) in block.transactions.iter().enumerate() {
-                let value = bincode::serialize(&(&tx.sender, &tx.receiver, &tx.amount, &tx.fee))?;
+                let value = Self::make_tx_value(tx, block.index, tx_pos)?;
                 let receiver_key = make_tx_key(&tx.receiver, block.index, tx_pos);
                 tx_table.insert(receiver_key.as_slice(), value.as_slice())?;
                 if !tx.sender.is_empty() {
@@ -194,12 +232,7 @@ impl Db {
                 lp_table.insert(block.index, payout_data.as_slice())?;
                 for (i, (receiver, amount, _tier)) in payouts.iter().enumerate() {
                     let key = make_tx_key(receiver, block.index, 0xFFFF_0000 + i);
-                    let value = bincode::serialize(&(
-                        "lottery".to_string(),
-                        receiver.clone(),
-                        *amount,
-                        0u64,
-                    ))?;
+                    let value = Self::make_lottery_value(receiver, *amount, block.index, i)?;
                     tx_table.insert(key.as_slice(), value.as_slice())?;
                 }
             }
@@ -237,10 +270,11 @@ impl Db {
             let (key, value) = entry?;
             let key_bytes = key.value();
             let block_index = u64::from_be_bytes(key_bytes[prefix_len..prefix_len + 8].try_into()?);
-            let (sender, receiver, amount, fee): (String, String, u64, u64) =
+            let (sender, receiver, amount, fee, txid_hex): (String, String, u64, u64, String) =
                 bincode::deserialize(value.value())?;
             records.push(TxRecord {
                 block_index,
+                txid_hex,
                 sender,
                 receiver,
                 amount,
@@ -284,8 +318,7 @@ impl Db {
             // Rebuild TX_INDEX from blocks
             for block in blocks {
                 for (tx_pos, tx) in block.transactions.iter().enumerate() {
-                    let value =
-                        bincode::serialize(&(&tx.sender, &tx.receiver, &tx.amount, &tx.fee))?;
+                    let value = Self::make_tx_value(tx, block.index, tx_pos)?;
                     let receiver_key = make_tx_key(&tx.receiver, block.index, tx_pos);
                     table.insert(receiver_key.as_slice(), value.as_slice())?;
                     if !tx.sender.is_empty() {
@@ -301,12 +334,8 @@ impl Db {
                         lp_table.insert(block.index, data.as_slice())?;
                         for (i, (receiver, amount, _tier)) in payouts.iter().enumerate() {
                             let key = make_tx_key(receiver, block.index, 0xFFFF_0000 + i);
-                            let value = bincode::serialize(&(
-                                "lottery".to_string(),
-                                receiver.clone(),
-                                *amount,
-                                0u64,
-                            ))?;
+                            let value =
+                                Self::make_lottery_value(receiver, *amount, block.index, i)?;
                             table.insert(key.as_slice(), value.as_slice())?;
                         }
                     }
@@ -368,8 +397,7 @@ impl Db {
                 blocks_table.insert(block.index, block_data.as_slice())?;
 
                 for (tx_pos, tx) in block.transactions.iter().enumerate() {
-                    let value =
-                        bincode::serialize(&(&tx.sender, &tx.receiver, &tx.amount, &tx.fee))?;
+                    let value = Self::make_tx_value(tx, block.index, tx_pos)?;
                     let receiver_key = make_tx_key(&tx.receiver, block.index, tx_pos);
                     tx_table.insert(receiver_key.as_slice(), value.as_slice())?;
                     if !tx.sender.is_empty() {
@@ -385,12 +413,8 @@ impl Db {
                         lp_table.insert(block.index, data.as_slice())?;
                         for (i, (receiver, amount, _tier)) in payouts.iter().enumerate() {
                             let key = make_tx_key(receiver, block.index, 0xFFFF_0000 + i);
-                            let value = bincode::serialize(&(
-                                "lottery".to_string(),
-                                receiver.clone(),
-                                *amount,
-                                0u64,
-                            ))?;
+                            let value =
+                                Self::make_lottery_value(receiver, *amount, block.index, i)?;
                             tx_table.insert(key.as_slice(), value.as_slice())?;
                         }
                     }
@@ -450,8 +474,7 @@ impl Db {
             // Rebuild TX_INDEX from canonical chain
             for block in &all_blocks {
                 for (tx_pos, tx) in block.transactions.iter().enumerate() {
-                    let value =
-                        bincode::serialize(&(&tx.sender, &tx.receiver, &tx.amount, &tx.fee))?;
+                    let value = Self::make_tx_value(tx, block.index, tx_pos)?;
                     let receiver_key = make_tx_key(&tx.receiver, block.index, tx_pos);
                     tx_table.insert(receiver_key.as_slice(), value.as_slice())?;
                     if !tx.sender.is_empty() {
@@ -468,12 +491,8 @@ impl Db {
                     lp_table.insert(*block_index, data.as_slice())?;
                     for (i, (receiver, amount, _tier)) in payouts.iter().enumerate() {
                         let key = make_tx_key(receiver, *block_index, 0xFFFF_0000 + i);
-                        let value = bincode::serialize(&(
-                            "lottery".to_string(),
-                            receiver.clone(),
-                            *amount,
-                            0u64,
-                        ))?;
+                        let value =
+                            Self::make_lottery_value(receiver, *amount, *block_index, i)?;
                         tx_table.insert(key.as_slice(), value.as_slice())?;
                     }
                 }
@@ -658,33 +677,37 @@ impl Db {
     // Mempool persistence
     // -------------------------------------------------------------------------
 
-    /// Persist a single pending transaction. Called write-through from Mempool::add_transaction.
+    /// Persist a single pending transaction. Uses the txid as the MEMPOOL key
+    /// so the key is a stable, fixed-size identifier for every transaction.
     pub fn save_mempool_tx(
         &self,
-        sig: &[u8],
-        tx: &lootcoin_core::transaction::Transaction,
+        tx: &Transaction,
         added_height: u64,
     ) -> Result<(), Box<dyn std::error::Error>> {
+        let txid = tx.txid();
         let data = bincode::serialize(&(tx, added_height))?;
         let wtxn = self.db.begin_write()?;
         {
             let mut table = wtxn.open_table(MEMPOOL)?;
-            table.insert(sig, data.as_slice())?;
+            table.insert(txid.as_slice(), data.as_slice())?;
         }
         wtxn.commit()?;
         Ok(())
     }
 
     /// Remove multiple pending transactions in a single write transaction.
-    pub fn remove_mempool_txs(&self, sigs: &[Vec<u8>]) -> Result<(), Box<dyn std::error::Error>> {
-        if sigs.is_empty() {
+    pub fn remove_mempool_txs(
+        &self,
+        txids: &[Vec<u8>],
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        if txids.is_empty() {
             return Ok(());
         }
         let wtxn = self.db.begin_write()?;
         {
             let mut table = wtxn.open_table(MEMPOOL)?;
-            for sig in sigs {
-                table.remove(sig.as_slice())?;
+            for txid in txids {
+                table.remove(txid.as_slice())?;
             }
         }
         wtxn.commit()?;
@@ -1429,7 +1452,7 @@ mod tests {
     fn save_and_load_mempool_tx() {
         let db = db();
         let t = user_tx("alice", "bob", 10, 2, 77);
-        db.save_mempool_tx(&t.signature, &t, 5).unwrap();
+        db.save_mempool_tx(&t, 5).unwrap();
         let loaded = db.load_mempool().unwrap();
         assert_eq!(loaded.len(), 1);
         assert_eq!(loaded[0].0.amount, 10);
@@ -1441,9 +1464,9 @@ mod tests {
         let db = db();
         let t1 = user_tx("alice", "bob", 10, 2, 1);
         let t2 = user_tx("carol", "dave", 20, 2, 2);
-        db.save_mempool_tx(&t1.signature, &t1, 0).unwrap();
-        db.save_mempool_tx(&t2.signature, &t2, 0).unwrap();
-        db.remove_mempool_txs(&[t1.signature.clone()]).unwrap();
+        db.save_mempool_tx(&t1, 0).unwrap();
+        db.save_mempool_tx(&t2, 0).unwrap();
+        db.remove_mempool_txs(&[t1.txid().to_vec()]).unwrap();
         let loaded = db.load_mempool().unwrap();
         assert_eq!(loaded.len(), 1);
         assert_eq!(loaded[0].0.amount, 20);
@@ -1453,7 +1476,7 @@ mod tests {
     fn remove_mempool_txs_empty_slice_is_noop() {
         let db = db();
         let t = user_tx("alice", "bob", 10, 2, 1);
-        db.save_mempool_tx(&t.signature, &t, 0).unwrap();
+        db.save_mempool_tx(&t, 0).unwrap();
         db.remove_mempool_txs(&[]).unwrap();
         assert_eq!(db.load_mempool().unwrap().len(), 1);
     }
