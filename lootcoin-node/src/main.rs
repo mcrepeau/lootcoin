@@ -790,7 +790,20 @@ async fn main() {
     info!("API listening on http://{}", addr);
     let _ = std::fs::write(HEALTHY_FILE, b"1");
 
-    let app = router(state);
+    // Select the IP source used by the per-IP rate limiter.
+    // Defaults to the peer socket address (direct deployment).
+    // Set CLIENT_IP_SOURCE=XRealIp when running behind nginx with
+    //   proxy_set_header X-Real-IP $remote_addr;
+    // Set CLIENT_IP_SOURCE=XForwardedFor when behind Caddy / Traefik / HAProxy.
+    let ip_source = match std::env::var("CLIENT_IP_SOURCE").as_deref() {
+        Ok("XRealIp") | Ok("X-Real-IP") => axum_client_ip::ClientIpSource::XRealIp,
+        Ok("XForwardedFor") | Ok("X-Forwarded-For") => {
+            axum_client_ip::ClientIpSource::RightmostXForwardedFor
+        }
+        _ => axum_client_ip::ClientIpSource::ConnectInfo,
+    };
+
+    let app = router(state).layer(axum::Extension(ip_source));
     axum::serve(
         listener,
         app.into_make_service_with_connect_info::<std::net::SocketAddr>(),

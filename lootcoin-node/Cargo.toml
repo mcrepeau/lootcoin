@@ -17,8 +17,11 @@ tokio         = { version = "1.39", features = ["macros", "rt-multi-thread", "si
 tokio-stream  = { version = "0.1", features = ["sync"] }
 futures-util  = "0.3"
 
-# HTTP middleware (CORS, tracing)
-tower-http    = { version = "0.6", features = ["cors", "trace"] }
+# HTTP middleware (CORS, tracing, rate limiting)
+tower-http     = { version = "0.6", features = ["cors", "trace"] }
+tower_governor = { version = "0.8", default-features = false, features = ["axum"] }
+governor       = "0.10"
+axum-client-ip = "1.3"
 
 # Logging
 tracing       = "0.1"

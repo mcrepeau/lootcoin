@@ -4,6 +4,8 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
+use axum_client_ip::ClientIpSource;
+use tower_governor::{governor::GovernorConfigBuilder, key_extractor::KeyExtractor, GovernorError, GovernorLayer};
 use futures_util::StreamExt;
 use hex::FromHex;
 use serde::{Deserialize, Serialize};
@@ -36,6 +38,72 @@ use std::collections::HashMap;
 /// Maximum number of concurrent SSE subscribers. Prevents memory/CPU exhaustion
 /// from an attacker opening thousands of long-lived event stream connections.
 const MAX_SSE_SUBSCRIBERS: usize = 100;
+
+/// Tower-governor key extractor that honours the `ClientIpSource` extension
+/// configured at node startup (see `main.rs`).
+///
+/// Priority order:
+///   1. Header named by `ClientIpSource` (when a proxy extension is set)
+///   2. `ConnectInfo` socket address (direct connections, default)
+///   3. `127.0.0.1` — fallback for test contexts where no socket is present
+///
+/// The loopback fallback keeps existing unit tests (which use
+/// `Router::oneshot`) working without changes: each test creates a fresh
+/// router and therefore a fresh GCRA state, so the loopback bucket is never
+/// exhausted within a single test run.
+#[derive(Clone, Debug)]
+struct NodeIpKeyExtractor;
+
+impl KeyExtractor for NodeIpKeyExtractor {
+    type Key = IpAddr;
+
+    fn extract<T>(&self, req: &axum::http::Request<T>) -> Result<IpAddr, GovernorError> {
+        use std::net::Ipv4Addr;
+        const LOOPBACK: IpAddr = IpAddr::V4(Ipv4Addr::LOCALHOST);
+
+        if let Some(source) = req.extensions().get::<ClientIpSource>() {
+            match source {
+                ClientIpSource::XRealIp => {
+                    return req
+                        .headers()
+                        .get("x-real-ip")
+                        .and_then(|v| v.to_str().ok())
+                        .and_then(|s| s.parse::<IpAddr>().ok())
+                        .ok_or(GovernorError::UnableToExtractKey);
+                }
+                ClientIpSource::RightmostXForwardedFor => {
+                    return req
+                        .headers()
+                        .get("x-forwarded-for")
+                        .and_then(|v| v.to_str().ok())
+                        .and_then(|s| s.split(',').next_back())
+                        .and_then(|s| s.trim().parse::<IpAddr>().ok())
+                        .ok_or(GovernorError::UnableToExtractKey);
+                }
+                // ConnectInfo and any other source: fall through to peer IP.
+                _ => {}
+            }
+        }
+
+        Ok(req
+            .extensions()
+            .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
+            .map(|ci| ci.0.ip())
+            .unwrap_or(LOOPBACK))
+    }
+}
+
+/// Build a `GovernorLayer` that replenishes one token every `period` and
+/// allows an initial burst of `burst` tokens.
+fn governor_layer(
+    period: Duration,
+    burst: u32,
+) -> GovernorLayer<NodeIpKeyExtractor, governor::middleware::NoOpMiddleware, axum::body::Body> {
+    let mut b = GovernorConfigBuilder::default().key_extractor(NodeIpKeyExtractor);
+    b.period(period);
+    b.burst_size(burst);
+    GovernorLayer::new(std::sync::Arc::new(b.finish().unwrap()))
+}
 
 pub use crate::checkpoints::TRUSTED_CHECKPOINTS;
 
@@ -1122,14 +1190,39 @@ pub async fn block_hash_handler(
     }
 }
 
-/// Rate limiting is applied only to POST /transactions, POST /transactions/relay,
-/// and POST /peers.  POST /blocks is intentionally exempt: valid blocks require
-/// proof-of-work (natural rate limiter), invalid blocks are rejected cheaply,
+/// Per-IP rate limiting is applied via `tower_governor` to the three POST
+/// endpoints that do real work before verifying input:
+///
+///  - POST /transactions  (30 req/min, burst 5)  — ed25519 verification is ~30 µs
+///  - POST /transactions/relay  (300 req/min, burst 20)  — peer-to-peer path
+///  - POST /peers  (30 req/min, burst 5)  — same exposure as /transactions
+///
+/// POST /blocks is intentionally exempt: valid blocks require proof-of-work
+/// (natural rate limiter) and invalid blocks are rejected cheaply.
+///
+/// The IP source (direct socket, X-Real-IP, X-Forwarded-For, …) is selected
+/// by setting `CLIENT_IP_SOURCE` in the environment and adding the
+/// corresponding `axum_client_ip::ClientIpSource` extension in `main`.
 pub fn router(state: AppState) -> Router {
+    // One token replenished every 2 s → 30/min; initial burst of 5.
+    let tx_layer = governor_layer(std::time::Duration::from_secs(2), 5);
+    let peer_layer = governor_layer(std::time::Duration::from_secs(2), 5);
+    // One token every 200 ms → 300/min; initial burst of 20.
+    let relay_layer = governor_layer(std::time::Duration::from_millis(200), 20);
+
     Router::new()
-        .route("/transactions", post(submit_transaction_handler))
-        .route("/transactions/relay", post(relay_transaction_handler))
-        .route("/peers", post(add_peer_handler))
+        .route(
+            "/transactions",
+            post(submit_transaction_handler).route_layer(tx_layer),
+        )
+        .route(
+            "/transactions/relay",
+            post(relay_transaction_handler).route_layer(relay_layer),
+        )
+        .route(
+            "/peers",
+            post(add_peer_handler).route_layer(peer_layer),
+        )
         .route("/blocks", post(submit_block_handler))
         .route("/balance/{address}", get(get_balance_handler))
         .route(
