@@ -160,8 +160,7 @@ impl Db {
         tx_pos: usize,
     ) -> Result<Vec<u8>, bincode::Error> {
         let txid_hex = if tx.sender.is_empty() {
-            let data =
-                bincode::serialize(&(b"coinbase" as &[u8], block_index, tx_pos as u32))?;
+            let data = bincode::serialize(&(b"coinbase" as &[u8], block_index, tx_pos as u32))?;
             hex::encode(CubeHash256::digest(&data))
         } else {
             hex::encode(tx.txid())
@@ -176,11 +175,7 @@ impl Db {
         block_index: u64,
         payout_pos: usize,
     ) -> Result<Vec<u8>, bincode::Error> {
-        let data = bincode::serialize(&(
-            b"lottery" as &[u8],
-            block_index,
-            payout_pos as u32,
-        ))?;
+        let data = bincode::serialize(&(b"lottery" as &[u8], block_index, payout_pos as u32))?;
         let txid_hex = hex::encode(CubeHash256::digest(&data));
         bincode::serialize(&("lottery", receiver, amount, 0u64, &txid_hex))
     }
@@ -491,8 +486,7 @@ impl Db {
                     lp_table.insert(*block_index, data.as_slice())?;
                     for (i, (receiver, amount, _tier)) in payouts.iter().enumerate() {
                         let key = make_tx_key(receiver, *block_index, 0xFFFF_0000 + i);
-                        let value =
-                            Self::make_lottery_value(receiver, *amount, *block_index, i)?;
+                        let value = Self::make_lottery_value(receiver, *amount, *block_index, i)?;
                         tx_table.insert(key.as_slice(), value.as_slice())?;
                     }
                 }
@@ -696,10 +690,7 @@ impl Db {
     }
 
     /// Remove multiple pending transactions in a single write transaction.
-    pub fn remove_mempool_txs(
-        &self,
-        txids: &[Vec<u8>],
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    pub fn remove_mempool_txs(&self, txids: &[Vec<u8>]) -> Result<(), Box<dyn std::error::Error>> {
         if txids.is_empty() {
             return Ok(());
         }

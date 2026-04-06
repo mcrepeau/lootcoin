@@ -2299,8 +2299,16 @@ mod tests {
         chain.asert_anchor = Some((1, GENESIS_TS + 60, 10.0));
 
         // Block whose previous_hash is unknown — not in block_hashes or orphan_pool.
-        let orphan = block_at(2, vec![0xDE, 0xAD, 0xBE, 0xEF], vec![coinbase_tx("m")], GENESIS_TS + 120);
-        assert_eq!(chain.expected_difficulty_for(&orphan), chain.current_difficulty);
+        let orphan = block_at(
+            2,
+            vec![0xDE, 0xAD, 0xBE, 0xEF],
+            vec![coinbase_tx("m")],
+            GENESIS_TS + 120,
+        );
+        assert_eq!(
+            chain.expected_difficulty_for(&orphan),
+            chain.current_difficulty
+        );
     }
 
     #[test]
@@ -2343,14 +2351,21 @@ mod tests {
         // Slow fork block 2: very late timestamp → sits in the orphan pool.
         let fork_b2_ts = GENESIS_TS + 100_000;
         let fork_b2 = block_at(2, b1_hash, vec![coinbase_tx("f")], fork_b2_ts);
-        chain.orphan_pool.insert(fork_b2.hash.clone(), fork_b2.clone());
+        chain
+            .orphan_pool
+            .insert(fork_b2.hash.clone(), fork_b2.clone());
 
         // Fork block 3: predecessor = fork_b2 (in orphan pool).
         // prev_index=2, anchor_height=1:
         //   ideal  = (2−1) × 60 = 60 s
         //   actual = 100_000 − 60 = 99_940 s
         //   adj    = (60 − 99_940) / 3600 ≈ −27.7  →  clamp to MIN_DIFFICULTY
-        let fork_b3 = block_at(3, fork_b2.hash.clone(), vec![coinbase_tx("f")], GENESIS_TS + 100_060);
+        let fork_b3 = block_at(
+            3,
+            fork_b2.hash.clone(),
+            vec![coinbase_tx("f")],
+            GENESIS_TS + 100_060,
+        );
         assert_eq!(chain.expected_difficulty_for(&fork_b3), MIN_DIFFICULTY);
         // And this is well below the main chain's injected anchor_diff=10.0,
         // confirming the fork correctly gets a lower bar.
@@ -2370,14 +2385,21 @@ mod tests {
 
         // Fast fork block 2: arrived 1 second after block 1 (vs 60 s ideal).
         let fork_b2 = block_at(2, b1_hash, vec![coinbase_tx("f")], GENESIS_TS + 61);
-        chain.orphan_pool.insert(fork_b2.hash.clone(), fork_b2.clone());
+        chain
+            .orphan_pool
+            .insert(fork_b2.hash.clone(), fork_b2.clone());
 
         // Fork block 3: predecessor = fork_b2 (ts = GENESIS_TS+61).
         // prev_index=2, anchor_height=1:
         //   ideal  = 60 s
         //   actual = 61 − 60 = 1 s
         //   adj    = (60 − 1) / 3600 = 59/3600 ≈ +0.0164  →  > 10.0
-        let fork_b3 = block_at(3, fork_b2.hash.clone(), vec![coinbase_tx("f")], GENESIS_TS + 180);
+        let fork_b3 = block_at(
+            3,
+            fork_b2.hash.clone(),
+            vec![coinbase_tx("f")],
+            GENESIS_TS + 180,
+        );
         let expected = 10.0 + 59.0 / ASERT_HALFLIFE_SECS;
         assert!(
             (chain.expected_difficulty_for(&fork_b3) - expected).abs() < 1e-9,
@@ -2509,8 +2531,14 @@ mod tests {
             next_block(&chain, vec![coinbase_tx("main_b"), tx_b], GENESIS_TS + 2),
             None,
         );
-        assert!(chain.pending_tickets.iter().any(|t| t.miner == named_addr("main_a")));
-        assert!(chain.pending_tickets.iter().any(|t| t.miner == named_addr("main_b")));
+        assert!(chain
+            .pending_tickets
+            .iter()
+            .any(|t| t.miner == named_addr("main_a")));
+        assert!(chain
+            .pending_tickets
+            .iter()
+            .any(|t| t.miner == named_addr("main_b")));
 
         // Build three fork blocks, each with a real tx from alice.
         // Nonces start at 0 on the fork because reorg_to replays from genesis.
@@ -2544,16 +2572,31 @@ mod tests {
 
         // Main-chain tickets are gone; fork-chain tickets are present.
         assert!(
-            !chain.pending_tickets.iter().any(|t| t.miner == named_addr("main_a")),
+            !chain
+                .pending_tickets
+                .iter()
+                .any(|t| t.miner == named_addr("main_a")),
             "ticket for displaced miner must be removed after reorg"
         );
         assert!(
-            !chain.pending_tickets.iter().any(|t| t.miner == named_addr("main_b")),
+            !chain
+                .pending_tickets
+                .iter()
+                .any(|t| t.miner == named_addr("main_b")),
             "ticket for displaced miner must be removed after reorg"
         );
-        assert!(chain.pending_tickets.iter().any(|t| t.miner == named_addr("fork_c")));
-        assert!(chain.pending_tickets.iter().any(|t| t.miner == named_addr("fork_d")));
-        assert!(chain.pending_tickets.iter().any(|t| t.miner == named_addr("fork_e")));
+        assert!(chain
+            .pending_tickets
+            .iter()
+            .any(|t| t.miner == named_addr("fork_c")));
+        assert!(chain
+            .pending_tickets
+            .iter()
+            .any(|t| t.miner == named_addr("fork_d")));
+        assert!(chain
+            .pending_tickets
+            .iter()
+            .any(|t| t.miner == named_addr("fork_e")));
     }
 
     #[test]

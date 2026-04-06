@@ -350,8 +350,8 @@ async fn main() {
         .parse()
         .expect("COOLDOWN_SECS must be a positive integer");
 
-    let cooldown_db_path = std::env::var("COOLDOWN_DB_PATH")
-        .unwrap_or_else(|_| "faucet_cooldowns.redb".to_string());
+    let cooldown_db_path =
+        std::env::var("COOLDOWN_DB_PATH").unwrap_or_else(|_| "faucet_cooldowns.redb".to_string());
 
     // ── Restore faucet wallet from secret key ─────────────────────────────────
 
@@ -371,12 +371,15 @@ async fn main() {
     // ── Open (or create) the cooldown database ────────────────────────────────
 
     let cooldown = Duration::from_secs(cooldown_secs);
-    let cooldown_db = Database::create(&cooldown_db_path)
-        .expect("Failed to open cooldown database");
+    let cooldown_db =
+        Database::create(&cooldown_db_path).expect("Failed to open cooldown database");
 
     let initial_cooldowns = load_cooldowns(&cooldown_db, cooldown);
     if !initial_cooldowns.is_empty() {
-        info!("Restored {} active cooldown(s) from database", initial_cooldowns.len());
+        info!(
+            "Restored {} active cooldown(s) from database",
+            initial_cooldowns.len()
+        );
     }
 
     let state = Arc::new(AppState {

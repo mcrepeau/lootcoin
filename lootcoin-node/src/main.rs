@@ -551,18 +551,18 @@ async fn main() {
         // Checkpoint found — attempt to deserialize and validate against the BLOCKS table.
         // Both corrupt (failed deserialization) and stale (hash mismatch) checkpoints fall
         // back to a full replay from genesis.
-        let maybe_state: Option<blockchain::CheckpointState> =
-            match bincode::deserialize(&cp_data) {
-                Ok(s) => Some(s),
-                Err(e) => {
-                    warn!(
-                        "Checkpoint at block {} failed to deserialize ({}); \
+        let maybe_state: Option<blockchain::CheckpointState> = match bincode::deserialize(&cp_data)
+        {
+            Ok(s) => Some(s),
+            Err(e) => {
+                warn!(
+                    "Checkpoint at block {} failed to deserialize ({}); \
                          falling back to full replay",
-                        cp_height, e
-                    );
-                    None
-                }
-            };
+                    cp_height, e
+                );
+                None
+            }
+        };
 
         let cp_block = db
             .get_blocks_range(cp_height, 1)

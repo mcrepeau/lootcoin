@@ -82,10 +82,7 @@ impl Mempool {
         if self.entries.len() >= MAX_MEMPOOL_SIZE && !self.entries.contains_key(&sender) {
             return false;
         }
-        let old_txid = self
-            .entries
-            .get(&sender)
-            .map(|e| e.tx.txid().to_vec());
+        let old_txid = self.entries.get(&sender).map(|e| e.tx.txid().to_vec());
         let is_replace = old_txid.is_some();
         self.entries.insert(
             sender,
@@ -191,7 +188,7 @@ impl Mempool {
                 },
             );
             if let Some(db) = &self.db {
-                if let Err(e) = db.save_mempool_tx(&tx, current_height) {
+                if let Err(e) = db.save_mempool_tx(tx, current_height) {
                     tracing::warn!("Failed to persist re-added displaced tx: {}", e);
                 }
             }

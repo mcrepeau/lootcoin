@@ -5,7 +5,6 @@ use axum::{
     Json, Router,
 };
 use axum_client_ip::ClientIpSource;
-use tower_governor::{governor::GovernorConfigBuilder, key_extractor::KeyExtractor, GovernorError, GovernorLayer};
 use futures_util::StreamExt;
 use hex::FromHex;
 use serde::{Deserialize, Serialize};
@@ -16,6 +15,9 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{watch, RwLock};
 use tokio_stream::{wrappers::BroadcastStream, Stream};
+use tower_governor::{
+    governor::GovernorConfigBuilder, key_extractor::KeyExtractor, GovernorError, GovernorLayer,
+};
 use tower_http::{
     cors::{Any, CorsLayer},
     trace::TraceLayer,
@@ -29,10 +31,7 @@ use crate::loot_ticket::LootTicket;
 use crate::mempool::{FeeStats, Mempool};
 use crate::metrics::Metrics;
 use lootcoin_core::block::MAX_BLOCK_TXS;
-use lootcoin_core::{
-    block::Block,
-    transaction::Transaction,
-};
+use lootcoin_core::{block::Block, transaction::Transaction};
 use std::collections::HashMap;
 
 /// Maximum number of concurrent SSE subscribers. Prevents memory/CPU exhaustion
@@ -1002,7 +1001,7 @@ pub fn canonicalize_peer_url(raw_url: &str) -> Option<String> {
                 || octets[0] == 10                                               // 10.0.0.0/8
                 || (octets[0] == 172 && (16..=31).contains(&octets[1]))         // 172.16.0.0/12
                 || (octets[0] == 192 && octets[1] == 168)                       // 192.168.0.0/16
-                || (octets[0] == 169 && octets[1] == 254);                      // 169.254.0.0/16 link-local
+                || (octets[0] == 169 && octets[1] == 254); // 169.254.0.0/16 link-local
             if is_private {
                 return None;
             }
@@ -1015,7 +1014,7 @@ pub fn canonicalize_peer_url(raw_url: &str) -> Option<String> {
             // fc00::/7 (Unique Local) and fe80::/10 (Link-Local)
             let segments = addr.segments();
             let is_private = (segments[0] & 0xfe00) == 0xfc00   // fc00::/7
-                || (segments[0] & 0xffc0) == 0xfe80;            // fe80::/10
+                || (segments[0] & 0xffc0) == 0xfe80; // fe80::/10
             if is_private {
                 return None;
             }
@@ -1030,7 +1029,6 @@ pub fn canonicalize_peer_url(raw_url: &str) -> Option<String> {
         _ => format!("{scheme}://{host_str}"),
     })
 }
-
 
 pub async fn add_peer_handler(
     State(state): State<AppState>,
@@ -1233,10 +1231,7 @@ pub fn router(state: AppState) -> Router {
             "/transactions/relay",
             post(relay_transaction_handler).route_layer(relay_layer),
         )
-        .route(
-            "/peers",
-            post(add_peer_handler).route_layer(peer_layer),
-        )
+        .route("/peers", post(add_peer_handler).route_layer(peer_layer))
         .route("/blocks", post(submit_block_handler))
         .route("/balance/{address}", get(get_balance_handler))
         .route(
@@ -1339,8 +1334,8 @@ mod tests {
     async fn next_valid_block(state: &AppState) -> Block {
         let chain = state.chain.read().await;
         // Use a real bech32m address — the coinbase receiver must pass address validation.
-        let miner_addr = lootcoin_core::wallet::Wallet::from_secret_key_bytes([0xAAu8; 32])
-            .get_address();
+        let miner_addr =
+            lootcoin_core::wallet::Wallet::from_secret_key_bytes([0xAAu8; 32]).get_address();
         let txs = vec![Transaction {
             sender: String::new(),
             receiver: miner_addr,

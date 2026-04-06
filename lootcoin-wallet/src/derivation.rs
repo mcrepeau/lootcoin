@@ -34,8 +34,7 @@ pub fn key_from_mnemonic(m: &Mnemonic) -> [u8; 32] {
     ];
 
     for index in PATH {
-        let mut mac =
-            HmacSha512::new_from_slice(&chain_code).expect("HMAC accepts any key size");
+        let mut mac = HmacSha512::new_from_slice(&chain_code).expect("HMAC accepts any key size");
         mac.update(&[0x00]); // hardened child prefix
         mac.update(&key); // parent private key
         mac.update(&index.to_be_bytes());
@@ -56,7 +55,8 @@ mod tests {
     /// for a fixed mnemonic.  If this breaks, CLI and WASM wallets diverge again.
     #[test]
     fn known_vector() {
-        let phrase = "addict rookie smile vote knock yellow camera room suggest when endless winner";
+        let phrase =
+            "addict rookie smile vote knock yellow camera room suggest when endless winner";
         let mnemonic = Mnemonic::parse(phrase).unwrap();
         let wallet = Wallet::from_secret_key_bytes(key_from_mnemonic(&mnemonic));
         assert_eq!(
