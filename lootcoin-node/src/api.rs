@@ -1031,11 +1031,6 @@ pub fn canonicalize_peer_url(raw_url: &str) -> Option<String> {
     })
 }
 
-/// Returns `true` if `raw_url` is a safe peer URL to connect to.
-/// See [`canonicalize_peer_url`] for the full validation rules.
-pub fn is_safe_peer_url(raw_url: &str) -> bool {
-    canonicalize_peer_url(raw_url).is_some()
-}
 
 pub async fn add_peer_handler(
     State(state): State<AppState>,
@@ -2096,94 +2091,92 @@ mod tests {
         assert_ne!(resp.status(), StatusCode::OK);
     }
 
-    // ── is_safe_peer_url ──────────────────────────────────────────────────────
-
-    // ── is_safe_peer_url ──────────────────────────────────────────────────────
+    // ── canonicalize_peer_url ─────────────────────────────────────────────────
 
     #[test]
     fn safe_url_accepts_public_http() {
-        assert!(is_safe_peer_url("http://node.example.com:3000"));
+        assert!(canonicalize_peer_url("http://node.example.com:3000").is_some());
     }
 
     #[test]
     fn safe_url_accepts_public_https() {
-        assert!(is_safe_peer_url("https://node.example.com"));
+        assert!(canonicalize_peer_url("https://node.example.com").is_some());
     }
 
     #[test]
     fn safe_url_rejects_non_http_scheme() {
-        assert!(!is_safe_peer_url("file:///etc/passwd"));
-        assert!(!is_safe_peer_url("ftp://files.example.com"));
-        assert!(!is_safe_peer_url("ws://node.example.com"));
+        assert!(canonicalize_peer_url("file:///etc/passwd").is_none());
+        assert!(canonicalize_peer_url("ftp://files.example.com").is_none());
+        assert!(canonicalize_peer_url("ws://node.example.com").is_none());
     }
 
     #[test]
     fn safe_url_rejects_unparseable_url() {
-        assert!(!is_safe_peer_url("not a url"));
-        assert!(!is_safe_peer_url(""));
+        assert!(canonicalize_peer_url("not a url").is_none());
+        assert!(canonicalize_peer_url("").is_none());
     }
 
     #[test]
     fn safe_url_rejects_localhost_hostname() {
-        assert!(!is_safe_peer_url("http://localhost:3000"));
-        assert!(!is_safe_peer_url("http://localhost"));
-        assert!(!is_safe_peer_url("http://sub.localhost/path"));
+        assert!(canonicalize_peer_url("http://localhost:3000").is_none());
+        assert!(canonicalize_peer_url("http://localhost").is_none());
+        assert!(canonicalize_peer_url("http://sub.localhost/path").is_none());
     }
 
     #[test]
     fn safe_url_rejects_loopback_ipv4() {
-        assert!(!is_safe_peer_url("http://127.0.0.1:3000"));
-        assert!(!is_safe_peer_url("http://127.1.2.3"));
+        assert!(canonicalize_peer_url("http://127.0.0.1:3000").is_none());
+        assert!(canonicalize_peer_url("http://127.1.2.3").is_none());
     }
 
     #[test]
     fn safe_url_rejects_private_10_block() {
-        assert!(!is_safe_peer_url("http://10.0.0.1"));
-        assert!(!is_safe_peer_url("http://10.255.255.255:8080"));
+        assert!(canonicalize_peer_url("http://10.0.0.1").is_none());
+        assert!(canonicalize_peer_url("http://10.255.255.255:8080").is_none());
     }
 
     #[test]
     fn safe_url_rejects_private_172_16_block() {
-        assert!(!is_safe_peer_url("http://172.16.0.1"));
-        assert!(!is_safe_peer_url("http://172.31.255.255"));
+        assert!(canonicalize_peer_url("http://172.16.0.1").is_none());
+        assert!(canonicalize_peer_url("http://172.31.255.255").is_none());
         // 172.15 and 172.32 are public
-        assert!(is_safe_peer_url("http://172.15.0.1"));
-        assert!(is_safe_peer_url("http://172.32.0.1"));
+        assert!(canonicalize_peer_url("http://172.15.0.1").is_some());
+        assert!(canonicalize_peer_url("http://172.32.0.1").is_some());
     }
 
     #[test]
     fn safe_url_rejects_private_192_168_block() {
-        assert!(!is_safe_peer_url("http://192.168.1.1"));
-        assert!(!is_safe_peer_url("http://192.168.0.0"));
+        assert!(canonicalize_peer_url("http://192.168.1.1").is_none());
+        assert!(canonicalize_peer_url("http://192.168.0.0").is_none());
     }
 
     #[test]
     fn safe_url_rejects_link_local_ipv4() {
-        assert!(!is_safe_peer_url("http://169.254.0.1")); // AWS metadata etc.
-        assert!(!is_safe_peer_url("http://169.254.169.254"));
+        assert!(canonicalize_peer_url("http://169.254.0.1").is_none()); // AWS metadata etc.
+        assert!(canonicalize_peer_url("http://169.254.169.254").is_none());
     }
 
     #[test]
     fn safe_url_rejects_ipv6_loopback() {
-        assert!(!is_safe_peer_url("http://[::1]:3000"));
+        assert!(canonicalize_peer_url("http://[::1]:3000").is_none());
     }
 
     #[test]
     fn safe_url_rejects_ipv6_unique_local() {
-        assert!(!is_safe_peer_url("http://[fc00::1]"));
-        assert!(!is_safe_peer_url("http://[fd12:3456:789a::1]"));
+        assert!(canonicalize_peer_url("http://[fc00::1]").is_none());
+        assert!(canonicalize_peer_url("http://[fd12:3456:789a::1]").is_none());
     }
 
     #[test]
     fn safe_url_rejects_ipv6_link_local() {
-        assert!(!is_safe_peer_url("http://[fe80::1]"));
-        assert!(!is_safe_peer_url("http://[fe80::1%25eth0]")); // zone ID variant
+        assert!(canonicalize_peer_url("http://[fe80::1]").is_none());
+        assert!(canonicalize_peer_url("http://[fe80::1%25eth0]").is_none()); // zone ID variant
     }
 
     #[test]
     fn safe_url_accepts_public_ipv4() {
-        assert!(is_safe_peer_url("http://8.8.8.8:3000"));
-        assert!(is_safe_peer_url("http://1.2.3.4"));
+        assert!(canonicalize_peer_url("http://8.8.8.8:3000").is_some());
+        assert!(canonicalize_peer_url("http://1.2.3.4").is_some());
     }
 
     // ── canonicalize_peer_url ─────────────────────────────────────────────────
