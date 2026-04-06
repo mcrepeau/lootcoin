@@ -142,10 +142,11 @@
     </div>
     <div class="step">
       <div class="step-num">03</div>
-      <div class="step-title">Wait for maturity</div>
+      <div class="step-title">Wait for the reveal window</div>
       <div class="step-body">
-        Your ticket matures after 100 blocks, then settles within a 10-block reveal window —
-        payout lands at block H+110 at the latest.
+        Your ticket settles at block H+100, using the hashes of all 100 blocks from H to H+99
+        as randomness. The 100-block window is both the maturity delay and the entropy source —
+        an attacker would need to control all 100 consecutive blocks to influence the outcome.
       </div>
     </div>
     <div class="step">
