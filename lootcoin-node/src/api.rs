@@ -277,6 +277,9 @@ async fn apply_incoming_block(state: &AppState, block: Block) -> Result<bool, &'
     if coinbase.fee != 0 {
         return Err("coinbase fee must be zero");
     }
+    if !is_valid_address(&coinbase.receiver) {
+        return Err("coinbase receiver is not a valid address");
+    }
     // Only the first transaction may be a coinbase. Extra empty-sender transactions
     // would let a miner mint coins from thin air.
     if block
@@ -449,7 +452,7 @@ pub async fn submit_transaction_handler(
     let mut pk_bytes = [0u8; 32];
     pk_bytes.copy_from_slice(&pk_bytes_vec);
 
-    // Decode hex signature (64 bytes for ed25519)
+    // Decode hex signature (must be exactly 64 bytes for ed25519)
     let sig_bytes = match <Vec<u8>>::from_hex(&req.signature_hex) {
         Ok(v) => v,
         Err(_) => {
@@ -460,6 +463,13 @@ pub async fn submit_transaction_handler(
             ));
         }
     };
+    if sig_bytes.len() != 64 {
+        warn!(target: "api", "signature_hex wrong length: {}", sig_bytes.len());
+        return Err((
+            axum::http::StatusCode::BAD_REQUEST,
+            "signature_hex must be 64 bytes".to_string(),
+        ));
+    }
 
     let tx = Transaction {
         sender: req.sender,
@@ -942,18 +952,10 @@ pub async fn get_peers_handler(State(state): State<AppState>) -> Json<PeersRespo
 /// A valid address is bech32m with HRP "loot":
 ///   "loot1" prefix + 58 characters from the bech32 charset (32 payload + 6 checksum).
 ///
-/// This validates structure only — the bech32m checksum is not verified here.
-/// It is sufficient to prevent accidental burns to garbage strings while keeping
-/// the check dependency-free.
+/// Returns `true` iff `addr` is a well-formed lootcoin bech32m address,
+/// including full checksum verification.
 pub fn is_valid_address(addr: &str) -> bool {
-    // bech32 charset: the 32 symbols used in the data part (excludes b, i, o, 1 to
-    // avoid visual ambiguity). The separator "1" is between the HRP and data part.
-    const BECH32_CHARSET: &[u8] = b"qpzry9x8gf2tvdw0s3jn54khce6mua7l";
-    // A 32-byte (256-bit) hash encodes to 52 payload chars + 6 checksum chars = 58.
-    // Total address length: len("loot1") + 58 = 63.
-    addr.len() == 63
-        && addr.starts_with("loot1")
-        && addr[5..].bytes().all(|c| BECH32_CHARSET.contains(&c))
+    lootcoin_core::wallet::decode_address(addr).is_some()
 }
 
 /// Returns `true` if `raw_url` is a safe peer URL to connect to.
@@ -1324,9 +1326,12 @@ mod tests {
     /// With difficulty=0 any hash passes, so no real PoW is needed.
     async fn next_valid_block(state: &AppState) -> Block {
         let chain = state.chain.read().await;
+        // Use a real bech32m address — the coinbase receiver must pass address validation.
+        let miner_addr = lootcoin_core::wallet::Wallet::from_secret_key_bytes([0xAAu8; 32])
+            .get_address();
         let txs = vec![Transaction {
             sender: String::new(),
-            receiver: "miner".to_string(),
+            receiver: miner_addr,
             amount: 1,
             fee: 0,
             nonce: 0,
@@ -1825,6 +1830,23 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn submit_tx_wrong_length_signature_returns_400() {
+        let wallet = test_wallet();
+        let resp = post_json(
+            make_state(&wallet),
+            "/transactions",
+            serde_json::json!({
+                "sender": "alice", "receiver": "bob",
+                "amount": 100, "fee": 2, "nonce": 1,
+                "public_key_hex": "00".repeat(32),
+                "signature_hex": "aabb", // 2 bytes, not 64
+            }),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
     async fn submit_tx_wrong_signature_returns_400() {
         let wallet = test_wallet();
         // Correctly formatted but cryptographically invalid signature
@@ -2192,6 +2214,15 @@ mod tests {
         // 'b' is not in the bech32 charset
         assert!(!is_valid_address(
             "loot1bd9xz3rfdflaegwlvpqhg6rpftvwl4mt678kg9kf6nnengm8celsw7dnkm"
+        ));
+    }
+
+    #[test]
+    fn valid_address_rejects_bad_checksum() {
+        // Correct length and charset, but last char changed — checksum must fail.
+        // Known-good: loot1hd9xz3rfdflaegwlvpqhg6rpftvwl4mt678kg9kf6nnengm8celsw7dnkm
+        assert!(!is_valid_address(
+            "loot1hd9xz3rfdflaegwlvpqhg6rpftvwl4mt678kg9kf6nnengm8celsw7dnkn"
         ));
     }
 

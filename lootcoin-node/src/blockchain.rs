@@ -511,11 +511,18 @@ impl Blockchain {
         }
 
         // Coinbase reward is exactly 0 or 1 coin; fee must also be 0 or 1.
+        // Receiver must be a valid lootcoin address so that coinbase coins are
+        // always spendable (no coins credited to garbage/undecodable strings).
         // Checked here (not just at the API layer) so reorg replay and DB-loaded
         // blocks are subject to the same rule as freshly submitted ones.
         if let Some(coinbase) = block.transactions.first() {
-            if coinbase.sender.is_empty() && (coinbase.amount > 1 || coinbase.fee != 0) {
-                return false;
+            if coinbase.sender.is_empty() {
+                if coinbase.amount > 1 || coinbase.fee != 0 {
+                    return false;
+                }
+                if lootcoin_core::wallet::decode_address(&coinbase.receiver).is_none() {
+                    return false;
+                }
             }
         }
 
@@ -1191,10 +1198,21 @@ mod tests {
 
     // ── Helpers ──────────────────────────────────────────────────────────────
 
-    fn coinbase_tx(receiver: &str) -> Transaction {
+    /// Derive a deterministic valid lootcoin address from a human-readable test name.
+    /// Allows tests to use short names like "m1" while still producing real bech32m addresses
+    /// that pass coinbase receiver validation.
+    fn named_addr(name: &str) -> String {
+        let hash: [u8; 32] = CubeHash256::digest(name.as_bytes())
+            .as_slice()
+            .try_into()
+            .unwrap();
+        Wallet::from_secret_key_bytes(hash).get_address()
+    }
+
+    fn coinbase_tx(name: &str) -> Transaction {
         Transaction {
             sender: String::new(),
-            receiver: receiver.to_string(),
+            receiver: named_addr(name),
             amount: 1,
             fee: 0,
             nonce: 0,
@@ -1352,7 +1370,7 @@ mod tests {
     fn apply_coinbase_adds_to_balance() {
         let mut chain = make_chain();
         chain.apply_transaction(&coinbase_tx("new_miner"));
-        assert_eq!(chain.get_balance("new_miner"), 1);
+        assert_eq!(chain.get_balance(&named_addr("new_miner")), 1);
     }
 
     #[test]
@@ -1516,7 +1534,7 @@ mod tests {
         let mut chain = make_chain();
         let b = next_block(&chain, vec![coinbase_tx("new_miner")], GENESIS_TS + 1);
         chain.apply_in_memory(b, None);
-        assert_eq!(chain.get_balance("new_miner"), 1);
+        assert_eq!(chain.get_balance(&named_addr("new_miner")), 1);
     }
 
     #[test]
@@ -1529,8 +1547,8 @@ mod tests {
             ts += 1;
         }
         assert_eq!(chain.get_height(), 6);
-        assert_eq!(chain.get_balance("m0"), 1);
-        assert_eq!(chain.get_balance("m4"), 1);
+        assert_eq!(chain.get_balance(&named_addr("m0")), 1);
+        assert_eq!(chain.get_balance(&named_addr("m4")), 1);
     }
 
     #[test]
@@ -1559,7 +1577,7 @@ mod tests {
         assert_eq!(chain.get_balance(&bob_addr), 100);
         // 50/50 fee split: 5 to pot, 5 to miner (miner also has 1 from coinbase)
         assert_eq!(chain.get_pot(), 5);
-        assert_eq!(chain.get_balance("miner"), 6); // 1 coinbase + 5 fee share
+        assert_eq!(chain.get_balance(&named_addr("miner")), 6); // 1 coinbase + 5 fee share
     }
 
     // ── apply_in_memory: invalid blocks ──────────────────────────────────────
@@ -2037,7 +2055,7 @@ mod tests {
             None,
         );
         assert_eq!(chain.pending_tickets.len(), 1);
-        assert_eq!(chain.pending_tickets[0].miner, "m2");
+        assert_eq!(chain.pending_tickets[0].miner, named_addr("m2"));
 
         // Another coinbase-only — still no new ticket.
         chain.apply_in_memory(
@@ -2163,7 +2181,7 @@ mod tests {
         // Pot and miner balance must be consistent with each other.
         // miner_1 earns: 1 coinbase + 1 fee share (floor(fee=2 / 2) = 1) + lottery payout.
         assert_eq!(
-            chain.get_balance("miner_1"),
+            chain.get_balance(&named_addr("miner_1")),
             2 + payout, // coinbase + fee share + lottery payout (may be 0)
             "miner_1 balance must equal coinbase plus fee share plus any lottery payout"
         );
@@ -2434,8 +2452,8 @@ mod tests {
             next_block(&chain, vec![coinbase_tx("main_b")], GENESIS_TS + 2),
             None,
         );
-        assert_eq!(chain.get_balance("main_a"), 1);
-        assert_eq!(chain.get_balance("main_b"), 1);
+        assert_eq!(chain.get_balance(&named_addr("main_a")), 1);
+        assert_eq!(chain.get_balance(&named_addr("main_b")), 1);
 
         // Build a fork: fork_c and fork_d mine instead.
         let genesis_hash = chain.blocks[0].hash.clone();
@@ -2452,18 +2470,18 @@ mod tests {
 
         // main_a and main_b were displaced — their coinbase rewards are gone.
         assert_eq!(
-            chain.get_balance("main_a"),
+            chain.get_balance(&named_addr("main_a")),
             0,
             "displaced miner must lose coinbase"
         );
         assert_eq!(
-            chain.get_balance("main_b"),
+            chain.get_balance(&named_addr("main_b")),
             0,
             "displaced miner must lose coinbase"
         );
         // Fork miners get their rewards.
-        assert_eq!(chain.get_balance("fork_c"), 1);
-        assert_eq!(chain.get_balance("fork_d"), 1);
+        assert_eq!(chain.get_balance(&named_addr("fork_c")), 1);
+        assert_eq!(chain.get_balance(&named_addr("fork_d")), 1);
         // genesis_miner's balance from the genesis block is preserved.
         assert_eq!(chain.get_balance("genesis_miner"), 1000);
     }
@@ -2489,8 +2507,8 @@ mod tests {
             next_block(&chain, vec![coinbase_tx("main_b"), tx_b], GENESIS_TS + 2),
             None,
         );
-        assert!(chain.pending_tickets.iter().any(|t| t.miner == "main_a"));
-        assert!(chain.pending_tickets.iter().any(|t| t.miner == "main_b"));
+        assert!(chain.pending_tickets.iter().any(|t| t.miner == named_addr("main_a")));
+        assert!(chain.pending_tickets.iter().any(|t| t.miner == named_addr("main_b")));
 
         // Build three fork blocks, each with a real tx from alice.
         // Nonces start at 0 on the fork because reorg_to replays from genesis.
@@ -2524,16 +2542,16 @@ mod tests {
 
         // Main-chain tickets are gone; fork-chain tickets are present.
         assert!(
-            !chain.pending_tickets.iter().any(|t| t.miner == "main_a"),
+            !chain.pending_tickets.iter().any(|t| t.miner == named_addr("main_a")),
             "ticket for displaced miner must be removed after reorg"
         );
         assert!(
-            !chain.pending_tickets.iter().any(|t| t.miner == "main_b"),
+            !chain.pending_tickets.iter().any(|t| t.miner == named_addr("main_b")),
             "ticket for displaced miner must be removed after reorg"
         );
-        assert!(chain.pending_tickets.iter().any(|t| t.miner == "fork_c"));
-        assert!(chain.pending_tickets.iter().any(|t| t.miner == "fork_d"));
-        assert!(chain.pending_tickets.iter().any(|t| t.miner == "fork_e"));
+        assert!(chain.pending_tickets.iter().any(|t| t.miner == named_addr("fork_c")));
+        assert!(chain.pending_tickets.iter().any(|t| t.miner == named_addr("fork_d")));
+        assert!(chain.pending_tickets.iter().any(|t| t.miner == named_addr("fork_e")));
     }
 
     #[test]
@@ -2662,18 +2680,18 @@ mod tests {
 
         // After the reorg the fork miners have their rewards; main miners do not.
         assert_eq!(
-            chain.get_balance("main_a"),
+            chain.get_balance(&named_addr("main_a")),
             0,
             "displaced miner must lose reward"
         );
         assert_eq!(
-            chain.get_balance("main_b"),
+            chain.get_balance(&named_addr("main_b")),
             0,
             "displaced miner must lose reward"
         );
         for i in 1..=10 {
             assert_eq!(
-                chain.get_balance(&format!("fork_{}", i)),
+                chain.get_balance(&named_addr(&format!("fork_{}", i))),
                 1,
                 "fork_{} must have coinbase reward",
                 i

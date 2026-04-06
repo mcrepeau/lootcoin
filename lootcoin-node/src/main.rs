@@ -545,9 +545,21 @@ async fn main() {
             chain
         }
     } else if let Some((cp_height, cp_data)) = maybe_checkpoint {
-        // Checkpoint found — deserialize and validate it against the BLOCKS table.
-        let state: blockchain::CheckpointState =
-            bincode::deserialize(&cp_data).expect("Failed to deserialize checkpoint");
+        // Checkpoint found — attempt to deserialize and validate against the BLOCKS table.
+        // Both corrupt (failed deserialization) and stale (hash mismatch) checkpoints fall
+        // back to a full replay from genesis.
+        let maybe_state: Option<blockchain::CheckpointState> =
+            match bincode::deserialize(&cp_data) {
+                Ok(s) => Some(s),
+                Err(e) => {
+                    warn!(
+                        "Checkpoint at block {} failed to deserialize ({}); \
+                         falling back to full replay",
+                        cp_height, e
+                    );
+                    None
+                }
+            };
 
         let cp_block = db
             .get_blocks_range(cp_height, 1)
@@ -556,7 +568,8 @@ async fn main() {
             .next()
             .expect("Checkpoint block missing from BLOCKS table");
 
-        if cp_block.hash == state.block_hash {
+        let deserialized_ok = maybe_state.is_some();
+        if let Some(state) = maybe_state.filter(|s| s.block_hash == cp_block.hash) {
             info!(
                 "Found checkpoint at block {}; replaying only the tail...",
                 cp_height
@@ -585,14 +598,15 @@ async fn main() {
             history_start = 0; // archive node — has full history in BLOCKS table
             chain
         } else {
-            // Hash mismatch: this checkpoint is from a reorged (displaced) chain.
-            // Fall back to a full replay so we derive correct state from the DB.
-            warn!(
-                "Checkpoint at block {} is stale (hash mismatch) — falling back to full replay",
-                cp_height
-            );
+            // Stale checkpoint (hash mismatch) — warn if deserialization succeeded.
+            if deserialized_ok {
+                warn!(
+                    "Checkpoint at block {} is stale (hash mismatch) — falling back to full replay",
+                    cp_height
+                );
+            }
             if let Err(e) = db.delete_checkpoints_from(0) {
-                warn!("Failed to purge stale checkpoints: {}", e);
+                warn!("Failed to purge checkpoints: {}", e);
             }
             let mut iter = stored_blocks.into_iter();
             let genesis = iter.next().unwrap();
