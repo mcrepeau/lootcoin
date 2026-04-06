@@ -199,7 +199,7 @@ impl Gossip {
     /// Mark a transaction as seen and push it to all SSE subscribers.
     /// Returns `false` (no-op) if the transaction was already seen.
     pub async fn publish_transaction(&self, tx: &Transaction) -> bool {
-        if !self.seen_txs.lock().await.insert(tx.signature.clone()) {
+        if !self.seen_txs.lock().await.insert(tx.txid().to_vec()) {
             return false;
         }
         let _ = self.event_tx.send(NodeEvent::Transaction(tx.clone()));
