@@ -2,8 +2,17 @@ use crate::db::Db;
 use crate::loot_ticket::{
     LootTicket, JACKPOT_BUCKET_START, JACKPOT_DIVISOR, LARGE_BUCKET_START, LARGE_DIVISOR,
     MEDIUM_BUCKET_START, MEDIUM_DIVISOR, MIN_TX_FEE, PPM, REVEAL_BLOCKS, SMALL_BUCKET_START,
-    SMALL_DIVISOR, TICKET_MATURITY,
+    SMALL_DIVISOR,
 };
+
+// The full reveal window [created_height, created_height + REVEAL_BLOCKS) must
+// fit in the in-memory block cache when settlement fires at created_height + REVEAL_BLOCKS.
+// At that moment the cache holds exactly REORG_WINDOW blocks, so the oldest
+// block still present is created_height (blocks_offset == created_height).
+const _: () = assert!(
+    REORG_WINDOW as u64 >= REVEAL_BLOCKS,
+    "REORG_WINDOW must be >= REVEAL_BLOCKS or reveal entropy will silently degrade"
+);
 use crate::metrics::Metrics;
 use cubehash::CubeHash256;
 use lootcoin_core::{
@@ -382,10 +391,11 @@ impl Blockchain {
         self.blocks.get(rel).map(|b| b.hash.as_slice())
     }
 
-    /// Resolve the lottery draw for a maturing ticket.
+    /// Resolve the lottery draw for a ticket.
     ///
-    /// Uses REVEAL_BLOCKS of accumulated block-hash entropy so that an attacker
-    /// must control all REVEAL_BLOCKS consecutive blocks to steer the outcome.
+    /// Uses REVEAL_BLOCKS of accumulated block-hash entropy starting from the
+    /// ticket's creation block so that an attacker must control all REVEAL_BLOCKS
+    /// consecutive blocks to steer the outcome.
     ///
     /// Payout formula: `pot / DIVISOR` (flat, independent of tx count).
     ///
@@ -558,11 +568,11 @@ impl Blockchain {
         let current_index = block.index;
         let (mut to_settle, mut still_pending) = (Vec::new(), Vec::new());
         for t in self.pending_tickets.iter() {
-            // Settlement is triggered REVEAL_BLOCKS after the maturity height.
-            // The randomness uses blocks [maturity, maturity + REVEAL_BLOCKS),
+            // Settlement fires REVEAL_BLOCKS after ticket creation.
+            // The randomness uses blocks [created_height, created_height + REVEAL_BLOCKS),
             // all already committed before this block — the settling miner has
             // no influence over any of them.
-            if t.created_height + TICKET_MATURITY + REVEAL_BLOCKS == current_index {
+            if t.created_height + REVEAL_BLOCKS == current_index {
                 to_settle.push(t.clone());
             } else {
                 still_pending.push(t.clone());
@@ -579,7 +589,7 @@ impl Blockchain {
         }
         let mut payouts_this_block: Vec<(String, u64, String)> = Vec::new();
         for t in to_settle {
-            let reveal_start = t.created_height + TICKET_MATURITY;
+            let reveal_start = t.created_height;
             let (amount, tier) = self.compute_ticket_reward(reveal_start, &t);
             let payout = amount.min(self.pot);
             if payout > 0 {
@@ -2043,8 +2053,8 @@ mod tests {
 
     #[test]
     fn ticket_not_settled_before_reveal_window_closes() {
-        // A ticket issued at block 1 settles at block 1 + TICKET_MATURITY + REVEAL_BLOCKS = 111.
-        // At block 110 the ticket must still be pending and the pot untouched.
+        // A ticket issued at block 1 settles at block 1 + REVEAL_BLOCKS = 101.
+        // At block 100 the ticket must still be pending and the pot untouched.
         //
         // Blocks cross the retarget at block 100 (difficulty rises from 0 → 8),
         // so `mine_next_block` is used throughout to handle the transition.
@@ -2061,13 +2071,13 @@ mod tests {
         // Capture pot after the fee from block 1 has entered it.
         let pot_after_block1 = chain.get_pot();
 
-        // Blocks 2–110: advance the chain to just before settlement (coinbase-only is fine).
-        for i in 2u64..=110 {
+        // Blocks 2–100: advance the chain to just before settlement (coinbase-only is fine).
+        for i in 2u64..=100 {
             let b = mine_next_block(&chain, vec![coinbase_tx("other")], GENESIS_TS + i * 60);
             chain.apply_in_memory(b, None);
         }
 
-        assert_eq!(chain.get_height(), 111); // tip is block 110, height = 111
+        assert_eq!(chain.get_height(), 101); // tip is block 100, height = 101
         assert!(
             chain.pending_tickets.iter().any(|t| t.created_height == 1),
             "ticket from block 1 should still be pending before its settlement block"
@@ -2081,7 +2091,7 @@ mod tests {
 
     #[test]
     fn ticket_settles_at_maturity_plus_reveal_height() {
-        // The ticket from block 1 settles exactly at block 111.
+        // The ticket from block 1 settles exactly at block 101.
         let alice = lootcoin_core::wallet::Wallet::new();
         let bob = lootcoin_core::wallet::Wallet::new();
         let mut chain = make_chain();
@@ -2093,8 +2103,8 @@ mod tests {
         let b = mine_next_block(&chain, vec![coinbase_tx("miner_1"), tx], GENESIS_TS + 60);
         chain.apply_in_memory(b, None);
 
-        // Blocks 2–111: advance to settlement (coinbase-only is fine for filler).
-        for i in 2u64..=111 {
+        // Blocks 2–101: advance to settlement (coinbase-only is fine for filler).
+        for i in 2u64..=101 {
             let b = mine_next_block(
                 &chain,
                 vec![coinbase_tx(&format!("m{}", i))],
@@ -2103,10 +2113,10 @@ mod tests {
             chain.apply_in_memory(b, None);
         }
 
-        // After block 111, the ticket from block 1 must have settled.
+        // After block 101, the ticket from block 1 must have settled.
         assert!(
             !chain.pending_tickets.iter().any(|t| t.created_height == 1),
-            "ticket from block 1 must be settled after block 111"
+            "ticket from block 1 must be settled after block 101"
         );
     }
 
@@ -2124,8 +2134,8 @@ mod tests {
         let b = mine_next_block(&chain, vec![coinbase_tx("miner_1"), tx], GENESIS_TS + 60);
         chain.apply_in_memory(b, None);
 
-        // Blocks 2–111: filler (coinbase-only, no tickets).
-        for i in 2u64..=111 {
+        // Blocks 2–101: filler (coinbase-only, no tickets).
+        for i in 2u64..=101 {
             let b = mine_next_block(
                 &chain,
                 vec![coinbase_tx(&format!("m{}", i))],
@@ -2134,7 +2144,7 @@ mod tests {
             chain.apply_in_memory(b, None);
         }
 
-        // Ticket settled at block 111. The outcome is probabilistic (88% no win),
+        // Ticket settled at block 101. The outcome is probabilistic (62% no win),
         // so we verify the invariants rather than a specific amount.
         // fee=2 → floor(2/2)=1 to miner, 1 to pot → pot_with_fee = initial_pot + 1
         let pot_with_fee = initial_pot + 1;

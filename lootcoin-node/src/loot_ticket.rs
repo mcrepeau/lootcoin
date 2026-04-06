@@ -2,7 +2,6 @@
 pub(crate) use lootcoin_core::lottery::{
     JACKPOT_BUCKET_START, JACKPOT_DIVISOR, LARGE_BUCKET_START, LARGE_DIVISOR, MEDIUM_BUCKET_START,
     MEDIUM_DIVISOR, MIN_TX_FEE, PPM, REVEAL_BLOCKS, SMALL_BUCKET_START, SMALL_DIVISOR,
-    TICKET_MATURITY,
 };
 
 /// System-generated ticket issued to the miner of each block that contains
