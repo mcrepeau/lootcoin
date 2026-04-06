@@ -6,7 +6,7 @@ A proof-of-work blockchain with a **lottery-based fee mechanism**: half of every
 
 ## Concept
 
-In Bitcoin, miners collect transaction fees directly. In Lootcoin, every fee paid by a sender is added to a shared pot. Every time a miner mines a block they receive a **lottery ticket**. After a maturity period, each ticket is settled against a window of future block hashes used as provably-fair randomness. The payout is a fraction of the pot — small wins are common, jackpots are rare.
+In Bitcoin, miners collect transaction fees directly. In Lootcoin, every fee paid by a sender is added to a shared pot. Every time a miner mines a block they receive a **lottery ticket**. After a 100-block reveal window, each ticket is settled against the accumulated block-hash entropy as provably-fair randomness. The payout is a fraction of the pot — small wins are common, jackpots are rare.
 
 This creates a different incentive structure: miners are rewarded not just for the block they mine, but for a delayed probabilistic payout that depends on future miners' work, making the system self-reinforcing.
 
@@ -16,11 +16,9 @@ This creates a different incentive structure: miners are rewarded not just for t
 
 1. **One ticket per block** — every block that contains at least one non-coinbase transaction earns the miner a lottery ticket.
 
-2. **Maturity** — the ticket becomes eligible for settlement after `TICKET_MATURITY = 100` blocks.
+2. **Reveal window** — settlement fires at `H + REVEAL_BLOCKS` (H+100), using the hashes of all 100 blocks in `[H, H+100)` as entropy. The reveal window serves as both the maturity delay and the randomness source — an attacker must control all 100 consecutive blocks to steer the outcome; at 30% hashrate that probability is 0.3^100 ≈ 10^-52.
 
-3. **Reveal window** — settlement uses the hashes of the 10 blocks following maturity (`REVEAL_BLOCKS = 10`) as entropy. An attacker would need to control all 10 consecutive blocks to steer the outcome.
-
-4. **Single draw** — at block H+110 the ticket is settled against the pot *at that moment* using one probabilistic draw:
+3. **Single draw** — at block H+100 the ticket is settled against the pot *at that moment* using one probabilistic draw:
 
 | Probability | Tier | Payout formula | Expected frequency |
 |---|---|---|---|
@@ -32,9 +30,9 @@ This creates a different incentive structure: miners are rewarded not just for t
 
 Payouts are a flat fraction of the current pot — independent of how many transactions were in the block. No-win tickets produce no entry in `lottery_payouts`.
 
-5. **Fee split** — each block's transaction fees are split 50/50: half goes directly to the block's miner as immediate income, half accumulates in the lottery pot. This is the per-transaction incentive for miners; the lottery rewards the block itself.
+4. **Fee split** — each block's transaction fees are split 50/50: half goes directly to the block's miner as immediate income, half accumulates in the lottery pot. This is the per-transaction incentive for miners; the lottery rewards the block itself.
 
-6. **Pot funding** — seeded at genesis with 99,000,000 coins; replenished by 50% of every transaction fee thereafter. Payouts are fractions of the pot so it never fully drains. The pot naturally trends from its genesis level toward a long-run equilibrium determined by network activity.
+5. **Pot funding** — seeded at genesis with 99,000,000 coins; replenished by 50% of every transaction fee thereafter. Payouts are fractions of the pot so it never fully drains. The pot naturally trends from its genesis level toward a long-run equilibrium determined by network activity.
 
 ---
 
@@ -222,8 +220,7 @@ services:
 | Fork selection | Most accumulated work (Σ 2^bits) |
 | Coinbase reward | 1 coin per block |
 | Max non-coinbase txs per block | 240 |
-| Ticket maturity | 100 blocks |
-| Reveal window | 10 blocks |
+| Reveal window | 100 blocks |
 
 ---
 

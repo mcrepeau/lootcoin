@@ -6,8 +6,9 @@ pub(crate) use lootcoin_core::lottery::{
 
 /// System-generated ticket issued to the miner of each block that contains
 /// at least one non-coinbase transaction.
-/// Matures after TICKET_MATURITY blocks, then settled using REVEAL_BLOCKS
-/// of accumulated entropy. Payout is a flat fraction of the pot (`pot / DIVISOR`);
+/// Settled at `created_height + REVEAL_BLOCKS` using the hashes of blocks
+/// `[created_height, created_height + REVEAL_BLOCKS)` as entropy.
+/// Payout is a flat fraction of the pot (`pot / DIVISOR`);
 /// per-transaction incentives come from the 50/50 fee split instead.
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct LootTicket {

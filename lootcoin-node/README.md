@@ -23,7 +23,7 @@ Nodes propagate blocks and transactions over **Server-Sent Events (SSE)** rather
 
 **Peer subscriptions** — on startup, each node opens a persistent SSE connection to every peer in its list (`GET /peer-url/events`). Incoming events are validated and applied locally, then re-published to the node's own subscribers, propagating the event across the network. Reconnection uses exponential backoff (5 → 10 → 20 → 40 → 60 s, capped).
 
-**Deduplication** — every node keeps a fixed-capacity seen-cache (10,000 entries, FIFO eviction) keyed by block hash and transaction signature. An event already in the cache is silently dropped, preventing relay loops.
+**Deduplication** — every node keeps a fixed-capacity seen-cache (10,000 entries, FIFO eviction) keyed by block hash and transaction ID (txid). An event already in the cache is silently dropped, preventing relay loops.
 
 **Peer discovery** — nodes announce themselves to peers via `POST /peers` at startup. Peers are health-checked hourly with a `GET /chain/head` ping; peers that fail to respond are evicted after the grace period. The peer list is capped at 50 to bound the number of outbound connections.
 

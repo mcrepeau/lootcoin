@@ -35,7 +35,7 @@ Request coins for an address.
 **Response (200 OK):**
 
 ```json
-{ "message": "Sent 500 coins to your address.", "amount": 500 }
+{ "message": "Sent 500 coins to your address.", "txid": "a3f1...", "amount": 500 }
 ```
 
 **Error responses:**
@@ -58,6 +58,7 @@ All configuration is via environment variables.
 | `DISPENSE_AMOUNT` | No | `500` | Coins sent per request |
 | `DISPENSE_FEE` | No | `2` | Transaction fee deducted from faucet balance (minimum is 2) |
 | `COOLDOWN_SECS` | No | `86400` | Cooldown between dispenses per address (seconds) |
+| `COOLDOWN_DB_PATH` | No | `faucet_cooldowns.redb` | Path to the redb file used to persist cooldowns across restarts |
 
 The faucet wallet's address is derived from `FAUCET_SECRET_KEY` and logged at startup. Fund that address to make the faucet operational.
 
