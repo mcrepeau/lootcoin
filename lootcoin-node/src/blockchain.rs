@@ -482,8 +482,9 @@ impl Blockchain {
         }
 
         // --- Hash and PoW ---
-        if block.calculate_hash() != block.hash {
-            return false;
+        match block.calculate_hash() {
+            Ok(h) if h == block.hash => {}
+            _ => return false,
         }
         if !meets_difficulty(&block.hash, self.current_difficulty) {
             return false;
@@ -527,8 +528,9 @@ impl Blockchain {
         }
 
         // tx_root must commit to the actual transaction list.
-        if block.tx_root != Block::compute_tx_root(&block.transactions) {
-            return false;
+        match Block::compute_tx_root(&block.transactions) {
+            Ok(root) if root == block.tx_root => {}
+            _ => return false,
         }
 
         // --- Pre-validate all non-coinbase txs ---
@@ -793,7 +795,7 @@ impl Blockchain {
             .iter()
             .filter(|t| !t.sender.is_empty())
             .count();
-        block.calculate_hash() == block.hash
+        block.calculate_hash().is_ok_and(|h| h == block.hash)
             && meets_difficulty(&block.hash, self.expected_difficulty_for(block))
             && block.index <= self.get_height() + MAX_ORPHAN_DEPTH
             && non_coinbase <= MAX_BLOCK_TXS
@@ -1236,7 +1238,7 @@ mod tests {
             previous_hash: vec![0u8; 32],
             timestamp: GENESIS_TS,
             nonce: 0,
-            tx_root: Block::compute_tx_root(&txs),
+            tx_root: Block::compute_tx_root(&txs).expect("infallible"),
             transactions: txs,
             hash: vec![], // genesis hash left empty; first block prev_hash matches
         }
@@ -1254,7 +1256,7 @@ mod tests {
 
     /// Build the next block on top of `chain`. With difficulty=0 any hash passes.
     fn next_block(chain: &Blockchain, txs: Vec<Transaction>, timestamp: u64) -> Block {
-        let tx_root = Block::compute_tx_root(&txs);
+        let tx_root = Block::compute_tx_root(&txs).expect("infallible");
         let mut b = Block {
             index: chain.get_height(),
             previous_hash: chain.get_latest_hash(),
@@ -1264,7 +1266,7 @@ mod tests {
             transactions: txs,
             hash: vec![],
         };
-        b.hash = b.calculate_hash();
+        b.hash = b.calculate_hash().expect("infallible");
         b
     }
 
@@ -1608,7 +1610,7 @@ mod tests {
             transactions: txs,
             hash: vec![],
         };
-        b.hash = b.calculate_hash();
+        b.hash = b.calculate_hash().expect("infallible");
         assert!(matches!(
             chain.apply_in_memory(b, None),
             BlockOutcome::Rejected
@@ -1626,7 +1628,7 @@ mod tests {
 
         // Block 2 with timestamp <= median (GENESIS_TS) must be rejected
         let txs = vec![coinbase_tx("m2")];
-        let tx_root = Block::compute_tx_root(&txs);
+        let tx_root = Block::compute_tx_root(&txs).expect("infallible");
         let mut b = Block {
             index: chain.get_height(),
             previous_hash: chain.get_latest_hash(),
@@ -1636,7 +1638,7 @@ mod tests {
             transactions: txs,
             hash: vec![],
         };
-        b.hash = b.calculate_hash();
+        b.hash = b.calculate_hash().expect("infallible");
         assert!(matches!(
             chain.apply_in_memory(b, None),
             BlockOutcome::Rejected
@@ -1647,7 +1649,7 @@ mod tests {
     fn apply_block_wrong_index_does_not_advance_height() {
         let mut chain = make_chain();
         let txs = vec![coinbase_tx("m1")];
-        let tx_root = Block::compute_tx_root(&txs);
+        let tx_root = Block::compute_tx_root(&txs).expect("infallible");
         let mut b = Block {
             index: 5, // should be 1
             previous_hash: chain.get_latest_hash(),
@@ -1657,7 +1659,7 @@ mod tests {
             transactions: txs,
             hash: vec![],
         };
-        b.hash = b.calculate_hash();
+        b.hash = b.calculate_hash().expect("infallible");
         chain.apply_in_memory(b, None);
         assert_eq!(chain.get_height(), 1); // unchanged
     }
@@ -1707,7 +1709,7 @@ mod tests {
     fn apply_block_rejects_wrong_previous_hash() {
         let mut chain = make_chain();
         let txs = vec![coinbase_tx("m1")];
-        let tx_root = Block::compute_tx_root(&txs);
+        let tx_root = Block::compute_tx_root(&txs).expect("infallible");
         let mut b = Block {
             index: chain.get_height(),
             previous_hash: vec![0xDE, 0xAD, 0xBE, 0xEF], // wrong
@@ -1717,7 +1719,7 @@ mod tests {
             transactions: txs,
             hash: vec![],
         };
-        b.hash = b.calculate_hash();
+        b.hash = b.calculate_hash().expect("infallible");
         // Index matches but prev_hash doesn't → content-invalid, rejected outright
         // (validate_block_standalone also fails because it links nowhere known)
         chain.apply_in_memory(b, None);
@@ -1728,7 +1730,7 @@ mod tests {
     fn apply_block_rejects_future_timestamp() {
         let mut chain = make_chain();
         let txs = vec![coinbase_tx("m1")];
-        let tx_root = Block::compute_tx_root(&txs);
+        let tx_root = Block::compute_tx_root(&txs).expect("infallible");
         let mut b = Block {
             index: chain.get_height(),
             previous_hash: chain.get_latest_hash(),
@@ -1738,7 +1740,7 @@ mod tests {
             transactions: txs,
             hash: vec![],
         };
-        b.hash = b.calculate_hash();
+        b.hash = b.calculate_hash().expect("infallible");
         assert!(matches!(
             chain.apply_in_memory(b, None),
             BlockOutcome::Rejected
@@ -1866,7 +1868,7 @@ mod tests {
             previous_hash: vec![0u8; 32],
             timestamp: GENESIS_TS,
             nonce: 0,
-            tx_root: Block::compute_tx_root(&txs),
+            tx_root: Block::compute_tx_root(&txs).expect("infallible"),
             transactions: txs,
             hash: vec![],
         };
@@ -1879,7 +1881,7 @@ mod tests {
     /// Mine a block at the chain's *current* difficulty by iterating nonces.
     /// For difficulty=0 this is instantaneous; difficulty=8 needs ~256 iterations.
     fn mine_next_block(chain: &Blockchain, txs: Vec<Transaction>, timestamp: u64) -> Block {
-        let tx_root = Block::compute_tx_root(&txs);
+        let tx_root = Block::compute_tx_root(&txs).expect("infallible");
         let mut b = Block {
             index: chain.get_height(),
             previous_hash: chain.get_latest_hash(),
@@ -1890,7 +1892,7 @@ mod tests {
             hash: vec![],
         };
         loop {
-            b.hash = b.calculate_hash();
+            b.hash = b.calculate_hash().expect("infallible");
             if meets_difficulty(&b.hash, chain.current_difficulty) {
                 return b;
             }
@@ -1901,7 +1903,7 @@ mod tests {
     /// Build a block from an explicit parent rather than the chain tip.
     /// Used to construct fork chains without applying them to the main chain.
     fn block_at(index: u64, prev_hash: Vec<u8>, txs: Vec<Transaction>, timestamp: u64) -> Block {
-        let tx_root = Block::compute_tx_root(&txs);
+        let tx_root = Block::compute_tx_root(&txs).expect("infallible");
         let mut b = Block {
             index,
             previous_hash: prev_hash,
@@ -1911,7 +1913,7 @@ mod tests {
             transactions: txs,
             hash: vec![],
         };
-        b.hash = b.calculate_hash();
+        b.hash = b.calculate_hash().expect("infallible");
         b
     }
 

@@ -853,14 +853,14 @@ mod tests {
             previous_hash: vec![0u8; 32],
             timestamp: 1_700_000_000,
             nonce: 0,
-            tx_root: Block::compute_tx_root(&txs),
+            tx_root: Block::compute_tx_root(&txs).expect("infallible"),
             transactions: txs,
             hash: vec![],
         }
     }
 
     fn next_block(prev: &Block, txs: Vec<Transaction>, timestamp: u64) -> Block {
-        let tx_root = Block::compute_tx_root(&txs);
+        let tx_root = Block::compute_tx_root(&txs).expect("infallible");
         let mut b = Block {
             index: prev.index + 1,
             previous_hash: prev.hash.clone(),
@@ -870,7 +870,7 @@ mod tests {
             transactions: txs,
             hash: vec![],
         };
-        b.hash = b.calculate_hash();
+        b.hash = b.calculate_hash().expect("infallible");
         b
     }
 

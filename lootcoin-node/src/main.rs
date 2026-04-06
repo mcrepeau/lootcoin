@@ -527,7 +527,7 @@ async fn main() {
                 previous_hash: vec![0u8; 32],
                 timestamp: GENESIS_TIMESTAMP,
                 nonce: 0,
-                tx_root: block::Block::compute_tx_root(&genesis_txs),
+                tx_root: block::Block::compute_tx_root(&genesis_txs).expect("infallible"),
                 transactions: genesis_txs,
                 hash: vec![],
             };

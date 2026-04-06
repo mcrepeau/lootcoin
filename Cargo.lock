@@ -997,27 +997,12 @@ dependencies = [
 ]
 
 [[package]]
-name = "lootcoin-core"
-version = "2.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "05566fc35ba358e5763c9564db48bfc71a4e7b6b4a963d5058bac7d72cfa57c4"
-dependencies = [
- "bech32",
- "bincode",
- "cubehash",
- "ed25519-dalek",
- "hex",
- "rand 0.8.5",
- "serde",
-]
-
-[[package]]
 name = "lootcoin-faucet"
 version = "1.4.2"
 dependencies = [
  "axum",
  "hex",
- "lootcoin-core 2.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "lootcoin-core",
  "reqwest",
  "serde",
  "serde_json",
@@ -1034,7 +1019,7 @@ dependencies = [
  "anyhow",
  "cudarc",
  "hex",
- "lootcoin-core 2.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "lootcoin-core",
  "rand 0.8.5",
  "reqwest",
  "serde",
@@ -1056,7 +1041,7 @@ dependencies = [
  "futures-util",
  "governor",
  "hex",
- "lootcoin-core 2.0.0",
+ "lootcoin-core",
  "prometheus-client",
  "redb",
  "reqwest",
@@ -1082,7 +1067,7 @@ dependencies = [
  "getrandom 0.2.17",
  "hex",
  "hmac",
- "lootcoin-core 2.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "lootcoin-core",
  "rand 0.8.5",
  "reqwest",
  "serde",

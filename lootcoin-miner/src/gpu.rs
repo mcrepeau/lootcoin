@@ -148,7 +148,7 @@ mod tests {
 
     fn test_block() -> Block {
         let txs = vec![];
-        let tx_root = Block::compute_tx_root(&txs);
+        let tx_root = Block::compute_tx_root(&txs).expect("infallible");
         Block {
             index: 1,
             previous_hash: vec![0u8; 32],
@@ -188,7 +188,7 @@ mod tests {
 
         // Recompute on CPU — this is the ground-truth check.
         block.nonce = gpu_nonce;
-        let cpu_hash = block.calculate_hash();
+        let cpu_hash = block.calculate_hash().expect("infallible");
 
         assert!(
             meets_difficulty(&cpu_hash, difficulty),

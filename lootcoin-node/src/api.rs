@@ -291,7 +291,7 @@ async fn apply_incoming_block(state: &AppState, block: Block) -> Result<bool, &'
         return Err("extra coinbase transaction");
     }
 
-    let recomputed = block.calculate_hash();
+    let recomputed = block.calculate_hash().map_err(|_| "failed to hash block")?;
     if recomputed != block.hash {
         return Err("invalid block hash");
     }
@@ -1298,7 +1298,7 @@ mod tests {
             previous_hash: vec![0u8; 32],
             timestamp: 1_700_000_000,
             nonce: 0,
-            tx_root: Block::compute_tx_root(&genesis_txs),
+            tx_root: Block::compute_tx_root(&genesis_txs).expect("infallible"),
             transactions: genesis_txs,
             hash: vec![],
         };
@@ -1338,7 +1338,7 @@ mod tests {
             public_key: [0u8; 32],
             signature: vec![],
         }];
-        let tx_root = Block::compute_tx_root(&txs);
+        let tx_root = Block::compute_tx_root(&txs).expect("infallible");
         let mut b = Block {
             index: chain.get_height(),
             previous_hash: chain.get_latest_hash(),
@@ -1348,7 +1348,7 @@ mod tests {
             transactions: txs,
             hash: vec![],
         };
-        b.hash = b.calculate_hash();
+        b.hash = b.calculate_hash().expect("infallible");
         b
     }
 
@@ -1958,7 +1958,7 @@ mod tests {
             previous_hash: chain.get_latest_hash(),
             timestamp: now_secs(),
             nonce: 0,
-            tx_root: Block::compute_tx_root(&txs),
+            tx_root: Block::compute_tx_root(&txs).expect("infallible"),
             transactions: txs,
             hash: vec![0xFF; 32], // deliberately wrong
         };
@@ -1981,7 +1981,7 @@ mod tests {
             public_key: [0u8; 32],
             signature: vec![],
         }];
-        let tx_root = Block::compute_tx_root(&txs);
+        let tx_root = Block::compute_tx_root(&txs).expect("infallible");
         let mut b = Block {
             index: chain.get_height(),
             previous_hash: chain.get_latest_hash(),
@@ -1991,7 +1991,7 @@ mod tests {
             transactions: txs,
             hash: vec![],
         };
-        b.hash = b.calculate_hash();
+        b.hash = b.calculate_hash().expect("infallible");
         drop(chain);
         let resp = post_json(state, "/blocks", serde_json::json!(b)).await;
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
@@ -2012,7 +2012,7 @@ mod tests {
             public_key: [0u8; 32],
             signature: vec![],
         }];
-        let tx_root = Block::compute_tx_root(&txs);
+        let tx_root = Block::compute_tx_root(&txs).expect("infallible");
         let mut b = Block {
             index: chain.get_height(),
             previous_hash: chain.get_latest_hash(),
@@ -2022,7 +2022,7 @@ mod tests {
             transactions: txs,
             hash: vec![],
         };
-        b.hash = b.calculate_hash();
+        b.hash = b.calculate_hash().expect("infallible");
         drop(chain);
         let resp = post_json(state, "/blocks", serde_json::json!(b)).await;
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
@@ -2038,11 +2038,11 @@ mod tests {
             previous_hash: chain.get_latest_hash(),
             timestamp: now_secs(),
             nonce: 0,
-            tx_root: Block::compute_tx_root(&[]),
+            tx_root: Block::compute_tx_root(&[]).expect("infallible"),
             transactions: vec![],
             hash: vec![],
         };
-        b.hash = b.calculate_hash();
+        b.hash = b.calculate_hash().expect("infallible");
         drop(chain);
         let resp = post_json(state, "/blocks", serde_json::json!(b)).await;
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);

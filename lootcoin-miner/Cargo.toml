@@ -12,7 +12,7 @@ readme = "README.md"
 gpu = ["cudarc"]
 
 [dependencies]
-lootcoin-core = "2.0"
+lootcoin-core = { path = "../../lootcoin-core" }
 cudarc = { version = "0.9", optional = true, default-features = false, features = ["driver", "nvrtc"] }
 
 rand          = "0.8"

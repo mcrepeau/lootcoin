@@ -91,7 +91,7 @@ fn mine(
     shutdown: &AtomicBool,
 ) -> Option<u64> {
     let mut tries = 0u64;
-    let mut hash = block.calculate_hash();
+    let mut hash = block.calculate_hash().expect("infallible");
     while !meets_difficulty(&hash, difficulty) {
         // Check cancel/shutdown flags every 10 000 iterations to keep overhead negligible
         if tries.is_multiple_of(10_000)
@@ -100,7 +100,7 @@ fn mine(
             return None;
         }
         block.nonce = block.nonce.wrapping_add(1);
-        hash = block.calculate_hash();
+        hash = block.calculate_hash().expect("infallible");
         tries = tries.wrapping_add(1);
     }
     block.hash = hash;
@@ -359,7 +359,7 @@ async fn main() -> anyhow::Result<()> {
         //    tx_root commits to the full transaction list once so that the
         //    mining loop only hashes the small fixed-size header per attempt.
         let prev_hash = hex::decode(&head.latest_hash_hex).unwrap_or_default();
-        let tx_root = Block::compute_tx_root(&block_txs);
+        let tx_root = Block::compute_tx_root(&block_txs).expect("infallible");
         let mut block = Block {
             index: head.height,
             previous_hash: prev_hash,
@@ -434,7 +434,7 @@ async fn main() -> anyhow::Result<()> {
                 match miner.mine(&tmpl, block.nonce, difficulty, &mine_cancel, &mine_shutdown) {
                     Ok(Some((winning_nonce, tries))) => {
                         block.nonce = winning_nonce;
-                        block.hash = block.calculate_hash();
+                        block.hash = block.calculate_hash().expect("infallible");
                         (block, Some(tries))
                     }
                     Ok(None) => (block, None),
@@ -557,7 +557,7 @@ mod tests {
 
     fn empty_block() -> Block {
         let txs: Vec<Transaction> = vec![];
-        let tx_root = Block::compute_tx_root(&txs);
+        let tx_root = Block::compute_tx_root(&txs).expect("infallible");
         Block {
             index: 1,
             previous_hash: vec![0u8; 32],
@@ -642,7 +642,7 @@ mod tests {
         let cancel = AtomicBool::new(false);
         let shutdown = AtomicBool::new(false);
         mine(&mut block, 0.0, &cancel, &shutdown);
-        assert_eq!(block.hash, block.calculate_hash());
+        assert_eq!(block.hash, block.calculate_hash().expect("infallible"));
     }
 
     #[test]
