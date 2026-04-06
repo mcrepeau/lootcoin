@@ -574,9 +574,18 @@ pub async fn get_balance_handler(
 ) -> Json<BalanceResponse> {
     let chain = state.chain.read().await;
     let balance = chain.get_balance(&address);
-    let next_nonce = chain.get_nonce(&address);
+    let confirmed_nonce = chain.get_nonce(&address);
     drop(chain);
-    let pending = state.mempool.read().await.pending_debit(&address);
+    let pool = state.mempool.read().await;
+    let pending = pool.pending_debit(&address);
+    // If this address already has a tx in the mempool, the next valid nonce is
+    // one above the pending tx's nonce.  Returning the confirmed nonce would
+    // cause two rapid submissions from the same address to clobber each other.
+    let next_nonce = pool
+        .pending_nonce(&address)
+        .map(|n| n + 1)
+        .unwrap_or(confirmed_nonce);
+    drop(pool);
     let spendable_balance = balance.saturating_sub(pending);
     Json(BalanceResponse {
         address,
@@ -1434,6 +1443,35 @@ mod tests {
         let body = json_body(resp).await;
         assert_eq!(body["balance"], 10_000);
         assert_eq!(body["spendable_balance"], 10_000 - 502); // 500 + 2
+    }
+
+    #[tokio::test]
+    async fn balance_next_nonce_advances_when_tx_in_mempool() {
+        // Two rapid requests from the same address must not both see next_nonce=0.
+        // Once a pending tx with nonce=0 is in the mempool, next_nonce must be 1.
+        let wallet = test_wallet();
+        let addr = wallet.get_address();
+        let state = make_state(&wallet);
+
+        // Confirm no pending tx: next_nonce should be the confirmed value (0).
+        let body = json_body(get_req(state.clone(), &format!("/balance/{}", addr)).await).await;
+        assert_eq!(body["next_nonce"], 0);
+
+        // Simulate a pending outbound tx with nonce=0 (the first submission).
+        let pending = Transaction {
+            sender: addr.clone(),
+            receiver: "bob".to_string(),
+            amount: 500,
+            fee: 2,
+            nonce: 0,
+            public_key: [0u8; 32],
+            signature: vec![0xBB],
+        };
+        state.mempool.write().await.add_transaction(pending, 1);
+
+        // next_nonce must now be 1 so a second submission doesn't clobber the first.
+        let body = json_body(get_req(state, &format!("/balance/{}", addr)).await).await;
+        assert_eq!(body["next_nonce"], 1);
     }
 
     // ── GET /chain/head ───────────────────────────────────────────────────────

@@ -195,6 +195,15 @@ impl Mempool {
         }
     }
 
+    /// The nonce of the pending transaction for `sender`, or `None` if they
+    /// have no pending slot.  Used by `get_balance_handler` to return a
+    /// mempool-aware `next_nonce` so that two rapid submissions from the same
+    /// address don't both receive the same confirmed nonce and clobber each
+    /// other.
+    pub fn pending_nonce(&self, sender: &str) -> Option<u64> {
+        self.entries.get(sender).map(|e| e.tx.nonce)
+    }
+
     /// The pending debit for `sender`: `amount + fee` of their single pending
     /// transaction, or 0 if they have no pending slot.
     pub fn pending_debit(&self, sender: &str) -> u64 {
