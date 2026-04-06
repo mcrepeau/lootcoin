@@ -958,7 +958,16 @@ pub fn is_valid_address(addr: &str) -> bool {
     lootcoin_core::wallet::decode_address(addr).is_some()
 }
 
-/// Returns `true` if `raw_url` is a safe peer URL to connect to.
+/// Parse, validate, and canonicalize a peer URL.
+///
+/// Returns `Some(canonical)` if the URL is safe and well-formed, `None` if it
+/// should be rejected.  Canonical form:
+/// - scheme and host are lowercased (the `url` crate guarantees this)
+/// - any path, query string, or fragment is stripped (peers are origins only)
+/// - the port is omitted when it matches the scheme default (80 / 443)
+///
+/// This ensures that `http://Node.Example.COM:80/blocks?x=1` and
+/// `http://node.example.com` are stored and compared as the same peer.
 ///
 /// Rejects:
 /// - non-http/https schemes (file://, ftp://, etc.)
@@ -966,23 +975,17 @@ pub fn is_valid_address(addr: &str) -> bool {
 /// - private RFC-1918 ranges (10.x, 172.16-31.x, 192.168.x)
 /// - link-local / AWS metadata range (169.254.x.x)
 /// - IPv6 private (fc00::/7) and link-local (fe80::/10)
-pub fn is_safe_peer_url(raw_url: &str) -> bool {
-    let parsed = match url::Url::parse(raw_url) {
-        Ok(u) => u,
-        Err(_) => return false,
-    };
+pub fn canonicalize_peer_url(raw_url: &str) -> Option<String> {
+    let parsed = url::Url::parse(raw_url.trim()).ok()?;
 
-    // Only allow plain HTTP and HTTPS.
-    if parsed.scheme() != "http" && parsed.scheme() != "https" {
-        return false;
+    let scheme = parsed.scheme();
+    if scheme != "http" && scheme != "https" {
+        return None;
     }
 
-    let host = match parsed.host() {
-        Some(h) => h,
-        None => return false,
-    };
+    let host = parsed.host()?;
 
-    match host {
+    match &host {
         url::Host::Domain(name) => {
             // Block obvious loopback hostnames. We can't resolve arbitrary
             // domain names at validation time, so we block known aliases only;
@@ -990,60 +993,74 @@ pub fn is_safe_peer_url(raw_url: &str) -> bool {
             // proper egress firewall on the host machine).
             let lower = name.to_lowercase();
             if lower == "localhost" || lower.ends_with(".localhost") {
-                return false;
+                return None;
             }
         }
         url::Host::Ipv4(addr) => {
             let octets = addr.octets();
-            let is_private = octets[0] == 127                                                    // 127.0.0.0/8 loopback
-                || octets[0] == 10                                                  // 10.0.0.0/8
-                || (octets[0] == 172 && (16..=31).contains(&octets[1]))            // 172.16.0.0/12
-                || (octets[0] == 192 && octets[1] == 168)                          // 192.168.0.0/16
-                || (octets[0] == 169 && octets[1] == 254); // 169.254.0.0/16 (link-local / AWS metadata)
+            let is_private = octets[0] == 127                                    // 127.0.0.0/8 loopback
+                || octets[0] == 10                                               // 10.0.0.0/8
+                || (octets[0] == 172 && (16..=31).contains(&octets[1]))         // 172.16.0.0/12
+                || (octets[0] == 192 && octets[1] == 168)                       // 192.168.0.0/16
+                || (octets[0] == 169 && octets[1] == 254);                      // 169.254.0.0/16 link-local
             if is_private {
-                return false;
+                return None;
             }
         }
         url::Host::Ipv6(addr) => {
-            let ip = IpAddr::V6(addr);
+            let ip = IpAddr::V6(*addr);
             if ip.is_loopback() {
-                return false;
+                return None;
             }
             // fc00::/7 (Unique Local) and fe80::/10 (Link-Local)
             let segments = addr.segments();
-            let is_private = (segments[0] & 0xfe00) == 0xfc00    // fc00::/7
-                || (segments[0] & 0xffc0) == 0xfe80; // fe80::/10
+            let is_private = (segments[0] & 0xfe00) == 0xfc00   // fc00::/7
+                || (segments[0] & 0xffc0) == 0xfe80;            // fe80::/10
             if is_private {
-                return false;
+                return None;
             }
         }
     }
 
-    true
+    // Build canonical origin: strip path/query/fragment, drop default port.
+    let default_port: u16 = if scheme == "http" { 80 } else { 443 };
+    let host_str = parsed.host_str()?;
+    Some(match parsed.port() {
+        Some(p) if p != default_port => format!("{scheme}://{host_str}:{p}"),
+        _ => format!("{scheme}://{host_str}"),
+    })
+}
+
+/// Returns `true` if `raw_url` is a safe peer URL to connect to.
+/// See [`canonicalize_peer_url`] for the full validation rules.
+pub fn is_safe_peer_url(raw_url: &str) -> bool {
+    canonicalize_peer_url(raw_url).is_some()
 }
 
 pub async fn add_peer_handler(
     State(state): State<AppState>,
     Json(req): Json<AddPeerRequest>,
 ) -> axum::http::StatusCode {
-    let url = req.url.trim().to_string();
-    if !is_safe_peer_url(&url) {
-        warn!(target: "api", "rejected unsafe peer URL: {}", url);
-        return axum::http::StatusCode::BAD_REQUEST;
-    }
-    if std::env::var("NODE_URL").ok().as_deref() == Some(url.as_str()) {
+    let canonical = match canonicalize_peer_url(&req.url) {
+        Some(u) => u,
+        None => {
+            warn!(target: "api", "rejected unsafe peer URL: {}", req.url.trim());
+            return axum::http::StatusCode::BAD_REQUEST;
+        }
+    };
+    if std::env::var("NODE_URL").ok().as_deref() == Some(canonical.as_str()) {
         return axum::http::StatusCode::BAD_REQUEST; // refuse to add ourselves as a peer
     }
-    if !state.gossip.add_peer(url.clone()).await {
-        warn!(target: "api", "peer list full, rejecting {}", url);
+    if !state.gossip.add_peer(canonical.clone()).await {
+        warn!(target: "api", "peer list full, rejecting {}", canonical);
         return axum::http::StatusCode::TOO_MANY_REQUESTS;
     }
-    if let Err(e) = state.db.save_peer(&url) {
-        warn!(target: "api", "failed to persist peer {}: {}", url, e);
+    if let Err(e) = state.db.save_peer(&canonical) {
+        warn!(target: "api", "failed to persist peer {}: {}", canonical, e);
     }
     // Subscribe to the new peer's SSE event stream so we receive their blocks
     // and transactions immediately rather than waiting for them to push to us.
-    spawn_peer_subscription(state, url);
+    spawn_peer_subscription(state, canonical);
     axum::http::StatusCode::OK
 }
 
@@ -2167,6 +2184,63 @@ mod tests {
     fn safe_url_accepts_public_ipv4() {
         assert!(is_safe_peer_url("http://8.8.8.8:3000"));
         assert!(is_safe_peer_url("http://1.2.3.4"));
+    }
+
+    // ── canonicalize_peer_url ─────────────────────────────────────────────────
+
+    #[test]
+    fn canonicalize_strips_trailing_slash() {
+        assert_eq!(
+            canonicalize_peer_url("http://node.example.com:3000/"),
+            Some("http://node.example.com:3000".to_string())
+        );
+    }
+
+    #[test]
+    fn canonicalize_strips_path_and_query() {
+        assert_eq!(
+            canonicalize_peer_url("http://node.example.com:3000/blocks?from=0"),
+            Some("http://node.example.com:3000".to_string())
+        );
+    }
+
+    #[test]
+    fn canonicalize_removes_default_http_port() {
+        assert_eq!(
+            canonicalize_peer_url("http://node.example.com:80"),
+            Some("http://node.example.com".to_string())
+        );
+    }
+
+    #[test]
+    fn canonicalize_removes_default_https_port() {
+        assert_eq!(
+            canonicalize_peer_url("https://node.example.com:443"),
+            Some("https://node.example.com".to_string())
+        );
+    }
+
+    #[test]
+    fn canonicalize_keeps_non_default_port() {
+        assert_eq!(
+            canonicalize_peer_url("http://node.example.com:3000"),
+            Some("http://node.example.com:3000".to_string())
+        );
+    }
+
+    #[test]
+    fn canonicalize_lowercases_host() {
+        assert_eq!(
+            canonicalize_peer_url("http://Node.Example.COM:3000"),
+            Some("http://node.example.com:3000".to_string())
+        );
+    }
+
+    #[test]
+    fn canonicalize_returns_none_for_unsafe_url() {
+        assert_eq!(canonicalize_peer_url("http://127.0.0.1:3000"), None);
+        assert_eq!(canonicalize_peer_url("http://localhost"), None);
+        assert_eq!(canonicalize_peer_url("file:///etc/passwd"), None);
     }
 
     // ── is_valid_address ──────────────────────────────────────────────────────

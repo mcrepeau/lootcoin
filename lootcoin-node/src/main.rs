@@ -168,19 +168,22 @@ async fn sync_from_peers(
                     if known_peers.len() >= gossip::MAX_PEERS {
                         break;
                     }
-                    if my_url.as_deref() == Some(p.as_str()) {
+                    let canonical = match api::canonicalize_peer_url(&p) {
+                        Some(u) => u,
+                        None => {
+                            warn!("Ignoring unsafe peer URL from discovery: {}", p);
+                            continue;
+                        }
+                    };
+                    if my_url.as_deref() == Some(canonical.as_str()) {
                         continue; // don't add our own URL
                     }
-                    if !api::is_safe_peer_url(&p) {
-                        warn!("Ignoring unsafe peer URL from discovery: {}", p);
-                        continue;
-                    }
-                    if !known_peers.contains(&p) {
-                        info!("Discovered new peer: {}", p);
-                        if let Err(e) = db.save_peer(&p) {
-                            warn!("Failed to persist peer {}: {}", p, e);
+                    if !known_peers.contains(&canonical) {
+                        info!("Discovered new peer: {}", canonical);
+                        if let Err(e) = db.save_peer(&canonical) {
+                            warn!("Failed to persist peer {}: {}", canonical, e);
                         }
-                        known_peers.push(p);
+                        known_peers.push(canonical);
                     }
                 }
             }
@@ -667,21 +670,30 @@ async fn main() {
         .split(',')
         .map(str::trim)
         .filter(|s| !s.is_empty())
-        .map(str::to_string)
+        .filter_map(|s| match api::canonicalize_peer_url(s) {
+            Some(c) => Some(c),
+            None => {
+                warn!("Ignoring invalid PEERS env entry: {s}");
+                None
+            }
+        })
         .collect();
     let my_url = std::env::var("NODE_URL").ok();
     match db.load_peers() {
         Ok(stored) => {
             for p in stored {
-                if my_url.as_deref() == Some(p.as_str()) {
+                let canonical = match api::canonicalize_peer_url(&p) {
+                    Some(u) => u,
+                    None => {
+                        warn!("Skipping persisted peer with unsafe URL: {}", p);
+                        continue;
+                    }
+                };
+                if my_url.as_deref() == Some(canonical.as_str()) {
                     continue; // don't re-add our own URL if it was persisted
                 }
-                if !api::is_safe_peer_url(&p) {
-                    warn!("Skipping persisted peer with unsafe URL: {}", p);
-                    continue;
-                }
-                if !peers.contains(&p) {
-                    peers.push(p);
+                if !peers.contains(&canonical) {
+                    peers.push(canonical);
                 }
             }
         }
