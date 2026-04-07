@@ -94,20 +94,38 @@ services:
       - source: prometheus_config
         target: /etc/prometheus/prometheus.yml
 
+  grafana:
+    image: grafana/grafana:latest
+    ports:
+      - "3100:3000"
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: "Viewer"
+      GF_AUTH_DISABLE_LOGIN_FORM: "true"
+    depends_on:
+      - prometheus
+
 configs:
   prometheus_config:
     content: |
       global:
         scrape_interval: 15s
-      
+
       scrape_configs:
         - job_name: lootcoin-node
           static_configs:
             - targets:
                 - node1:3000
+                - node2:3000
+                - node3:3000
 
 volumes:
   node1-data:
   node2-data:
   node3-data:
   prometheus-data:
+  grafana-data:
