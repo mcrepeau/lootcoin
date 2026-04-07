@@ -110,7 +110,6 @@ fn wallet_from_file(wf: &WalletFile) -> Result<Wallet, String> {
 struct BalanceResponse {
     balance: u64,
     spendable_balance: u64,
-    next_nonce: u64,
 }
 
 #[derive(Serialize)]
@@ -281,13 +280,6 @@ fn cmd_send(
     let wf = load_wallet_file(wallet_path)?;
     let wallet = wallet_from_file(&wf)?;
 
-    // Fetch balance to get next_nonce before signing.
-    let bal: BalanceResponse = get_json(
-        client,
-        &format!("{}/balance/{}", node, wallet.get_address()),
-    )?;
-    let nonce = bal.next_nonce;
-
     println!("From:   {}", wallet.get_address());
     println!("To:     {}", receiver);
     println!("Amount: {} coins", amount);
@@ -313,7 +305,7 @@ fn cmd_send(
         return Ok(());
     }
 
-    let tx = Transaction::new_signed(&wallet, receiver, amount, fee, nonce);
+    let tx = Transaction::new_signed(&wallet, receiver, amount, fee);
     let body = TxSubmission {
         sender: tx.sender,
         receiver: tx.receiver,

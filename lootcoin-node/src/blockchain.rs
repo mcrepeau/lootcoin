@@ -77,8 +77,9 @@ pub const CHECKPOINT_INTERVAL: u64 = 1_000;
 #[derive(Serialize, Deserialize)]
 pub struct CheckpointState {
     pub balances: HashMap<String, u64>,
-    /// Sequential nonce for each address (= number of confirmed outbound txs sent).
-    pub account_nonces: HashMap<String, u64>,
+    /// Signatures of all confirmed transactions up to this checkpoint height.
+    /// Used for replay protection: a transaction whose signature appears here is a duplicate.
+    pub confirmed_signatures: HashSet<Vec<u8>>,
     pub pot: u64,
     pub chain_work: u128,
     /// Hash of the block at which this checkpoint was taken.
@@ -112,9 +113,9 @@ pub struct Blockchain {
     blocks_offset: u64,
 
     pub balances: HashMap<String, u64>,
-    /// Sequential nonce per sender: maps address → number of confirmed outbound txs.
-    /// A transaction is only valid if tx.nonce == account_nonces[sender] (or 0 for new).
-    account_nonces: HashMap<String, u64>,
+    /// Signatures of all confirmed non-coinbase transactions. Any transaction
+    /// whose signature is already present here is a replay and must be rejected.
+    pub confirmed_signatures: HashSet<Vec<u8>>,
     /// Main-chain hash → absolute block index. Pruned with the window.
     block_hashes: HashMap<Vec<u8>, u64>,
     orphan_pool: HashMap<Vec<u8>, Block>,
@@ -158,7 +159,7 @@ impl Blockchain {
             blocks: vec![genesis.clone()],
             blocks_offset: 0,
             balances: HashMap::new(),
-            account_nonces: HashMap::new(),
+            confirmed_signatures: HashSet::new(),
             block_hashes: HashMap::new(),
             orphan_pool: HashMap::new(),
             pending_tickets: Vec::new(),
@@ -204,10 +205,6 @@ impl Blockchain {
 
     pub fn get_balance(&self, address: &str) -> u64 {
         *self.balances.get(address).unwrap_or(&0)
-    }
-
-    pub fn get_nonce(&self, address: &str) -> u64 {
-        self.account_nonces.get(address).copied().unwrap_or(0)
     }
 
     pub fn get_pot(&self) -> u64 {
@@ -262,7 +259,7 @@ impl Blockchain {
     pub fn snapshot(&self) -> CheckpointState {
         CheckpointState {
             balances: self.balances.clone(),
-            account_nonces: self.account_nonces.clone(),
+            confirmed_signatures: self.confirmed_signatures.clone(),
             pot: self.pot,
             chain_work: self.chain_work,
             block_hash: self.get_latest_hash(),
@@ -291,12 +288,12 @@ impl Blockchain {
         self.blocks.push(checkpoint_block);
 
         self.block_hashes.clear();
-        self.account_nonces.clear();
+        self.confirmed_signatures.clear();
         self.orphan_pool.clear();
         self.settled_payouts_by_block.clear();
 
         self.balances = state.balances;
-        self.account_nonces = state.account_nonces;
+        self.confirmed_signatures = state.confirmed_signatures;
         self.pot = state.pot;
         self.chain_work = state.chain_work;
         self.current_difficulty = state.current_difficulty;
@@ -338,13 +335,14 @@ impl Blockchain {
         std::mem::take(&mut self.settled_payouts_by_block)
     }
 
-    /// Check fee, nonce, and balance. Does not re-verify the Ed25519 signature — caller must do that first.
+    /// Check fee, signature replay, and balance. Does not re-verify the Ed25519 signature — caller must do that first.
     pub fn validate_transaction_state(&self, tx: &Transaction) -> bool {
         if tx.fee < MIN_TX_FEE {
             return false;
         }
-        let expected_nonce = self.get_nonce(&tx.sender);
-        if tx.nonce != expected_nonce {
+        // Reject replays: every confirmed transaction's signature is stored;
+        // a second submission of the same bytes is a duplicate.
+        if self.confirmed_signatures.contains(&tx.signature) {
             return false;
         }
         let balance = self.get_balance(&tx.sender);
@@ -369,7 +367,7 @@ impl Blockchain {
         *sender_balance -= total;
         *self.balances.entry(tx.receiver.clone()).or_insert(0) += tx.amount;
         self.pot = self.pot.saturating_add(tx.fee);
-        *self.account_nonces.entry(tx.sender.clone()).or_insert(0) += 1;
+        self.confirmed_signatures.insert(tx.signature.clone());
     }
 
     fn loot_bucket_from_digest(digest: &[u8]) -> u32 {
@@ -536,9 +534,8 @@ impl Blockchain {
         // --- Pre-validate all non-coinbase txs ---
         {
             let mut pending_debits: HashMap<String, u64> = HashMap::new();
-            // Tracks the expected nonce for each sender as txs are validated
-            // within this block, initialised from committed account_nonces.
-            let mut pending_nonces: HashMap<String, u64> = HashMap::new();
+            // Tracks signatures seen earlier in this block to detect intra-block duplicates.
+            let mut block_sigs: HashSet<Vec<u8>> = HashSet::new();
 
             for tx in &block.transactions {
                 if tx.sender.is_empty() {
@@ -550,14 +547,12 @@ impl Blockchain {
                 if tx.fee < MIN_TX_FEE {
                     return false;
                 }
-                // Nonce must be exactly the sender's next expected nonce.
-                let expected = *pending_nonces
-                    .get(&tx.sender)
-                    .unwrap_or_else(|| self.account_nonces.get(&tx.sender).unwrap_or(&0));
-                if tx.nonce != expected {
+                // Reject replays: signature already confirmed, or seen earlier in this block.
+                if self.confirmed_signatures.contains(&tx.signature)
+                    || !block_sigs.insert(tx.signature.clone())
+                {
                     return false;
                 }
-                *pending_nonces.entry(tx.sender.clone()).or_insert(expected) = expected + 1;
                 let balance = self.get_balance(&tx.sender);
                 let already_debited = pending_debits.get(&tx.sender).copied().unwrap_or(0);
                 let total = match tx.amount.checked_add(tx.fee) {
@@ -961,7 +956,7 @@ impl Blockchain {
         self.blocks.clear();
         self.blocks_offset = 0;
         self.balances.clear();
-        self.account_nonces.clear();
+        self.confirmed_signatures.clear();
         self.block_hashes.clear();
         self.orphan_pool.clear();
         self.pending_tickets.clear();
@@ -1412,25 +1407,21 @@ mod tests {
     }
 
     #[test]
-    fn apply_transaction_increments_account_nonce() {
+    fn apply_transaction_records_confirmed_signature() {
         let mut chain = make_chain();
         let tx = Transaction {
             sender: "genesis_miner".to_string(),
             receiver: "alice".to_string(),
             amount: 100,
             fee: 10,
-            nonce: 0,
+            nonce: 42,
             public_key: [0u8; 32],
             signature: vec![42],
         };
         chain.apply_transaction(&tx);
-        assert_eq!(
-            chain
-                .account_nonces
-                .get("genesis_miner")
-                .copied()
-                .unwrap_or(0),
-            1
+        assert!(
+            chain.confirmed_signatures.contains(&vec![42u8]),
+            "signature must be recorded after confirmation"
         );
     }
 
@@ -1486,18 +1477,18 @@ mod tests {
     }
 
     #[test]
-    fn validate_rejects_wrong_nonce() {
+    fn validate_rejects_confirmed_signature() {
         let mut chain = make_chain();
-        // Pretend genesis_miner already confirmed 1 outbound tx — nonce 0 is spent.
-        chain.account_nonces.insert("genesis_miner".to_string(), 1);
+        // Mark this signature as already confirmed.
+        chain.confirmed_signatures.insert(vec![42u8]);
         let tx = Transaction {
             sender: "genesis_miner".to_string(),
             receiver: "alice".to_string(),
             amount: 100,
             fee: 10,
-            nonce: 0, // stale nonce — must be rejected
+            nonce: 7,
             public_key: [0u8; 32],
-            signature: vec![42],
+            signature: vec![42], // replay — must be rejected
         };
         assert!(!chain.validate_transaction_state(&tx));
     }
@@ -1567,7 +1558,7 @@ mod tests {
         // Now alice sends to bob using a properly signed transaction
         let bob = Wallet::new();
         let bob_addr = bob.get_address();
-        let signed_tx = Transaction::new_signed(&alice, bob_addr.clone(), 100, 10, 0);
+        let signed_tx = Transaction::new_signed(&alice, bob_addr.clone(), 100, 10);
 
         let send_block = next_block(
             &chain,
@@ -2051,7 +2042,7 @@ mod tests {
         );
 
         // Block with a real transaction — ticket issued to the miner.
-        let tx = Transaction::new_signed(&alice, bob.get_address(), 10, 2, 0);
+        let tx = Transaction::new_signed(&alice, bob.get_address(), 10, 2);
         chain.apply_in_memory(
             next_block(&chain, vec![coinbase_tx("m2"), tx], GENESIS_TS + 2),
             None,
@@ -2085,7 +2076,7 @@ mod tests {
         chain.balances.insert(alice.get_address(), 500);
 
         // Block 1: miner_1 earns the ticket under test (requires a real tx).
-        let tx = Transaction::new_signed(&alice, bob.get_address(), 10, 2, 0);
+        let tx = Transaction::new_signed(&alice, bob.get_address(), 10, 2);
         let b = mine_next_block(&chain, vec![coinbase_tx("miner_1"), tx], GENESIS_TS + 60);
         chain.apply_in_memory(b, None);
         // Capture pot after the fee from block 1 has entered it.
@@ -2119,7 +2110,7 @@ mod tests {
         chain.balances.insert(alice.get_address(), 500);
 
         // Block 1: issue the ticket under test.
-        let tx = Transaction::new_signed(&alice, bob.get_address(), 10, 2, 0);
+        let tx = Transaction::new_signed(&alice, bob.get_address(), 10, 2);
         let b = mine_next_block(&chain, vec![coinbase_tx("miner_1"), tx], GENESIS_TS + 60);
         chain.apply_in_memory(b, None);
 
@@ -2150,7 +2141,7 @@ mod tests {
         let initial_pot = chain.get_pot();
 
         // Block 1: miner_1 earns a ticket (has a real tx).
-        let tx = Transaction::new_signed(&alice, bob.get_address(), 10, 2, 0);
+        let tx = Transaction::new_signed(&alice, bob.get_address(), 10, 2);
         let b = mine_next_block(&chain, vec![coinbase_tx("miner_1"), tx], GENESIS_TS + 60);
         chain.apply_in_memory(b, None);
 
@@ -2521,12 +2512,12 @@ mod tests {
         chain.seed_pot(0);
 
         // Two main-chain blocks with real txs → main miners each earn a ticket.
-        let tx_a = Transaction::new_signed(&alice, bob.get_address(), 1, 2, 0);
+        let tx_a = Transaction::new_signed(&alice, bob.get_address(), 1, 2);
         chain.apply_in_memory(
             next_block(&chain, vec![coinbase_tx("main_a"), tx_a], GENESIS_TS + 1),
             None,
         );
-        let tx_b = Transaction::new_signed(&alice, bob.get_address(), 1, 2, 1);
+        let tx_b = Transaction::new_signed(&alice, bob.get_address(), 1, 2);
         chain.apply_in_memory(
             next_block(&chain, vec![coinbase_tx("main_b"), tx_b], GENESIS_TS + 2),
             None,
@@ -2543,21 +2534,21 @@ mod tests {
         // Build three fork blocks, each with a real tx from alice.
         // Nonces start at 0 on the fork because reorg_to replays from genesis.
         let genesis_hash = chain.blocks[0].hash.clone();
-        let tx_c = Transaction::new_signed(&alice, bob.get_address(), 1, 2, 0);
+        let tx_c = Transaction::new_signed(&alice, bob.get_address(), 1, 2);
         let fc = block_at(
             1,
             genesis_hash.clone(),
             vec![coinbase_tx("fork_c"), tx_c],
             GENESIS_TS + 3,
         );
-        let tx_d = Transaction::new_signed(&alice, bob.get_address(), 1, 2, 1);
+        let tx_d = Transaction::new_signed(&alice, bob.get_address(), 1, 2);
         let fd = block_at(
             2,
             fc.hash.clone(),
             vec![coinbase_tx("fork_d"), tx_d],
             GENESIS_TS + 4,
         );
-        let tx_e = Transaction::new_signed(&alice, bob.get_address(), 1, 2, 2);
+        let tx_e = Transaction::new_signed(&alice, bob.get_address(), 1, 2);
         let fe = block_at(
             3,
             fd.hash.clone(),
@@ -2607,7 +2598,7 @@ mod tests {
         // Fee-paying transaction on the main chain inflates the pot.
         let alice = lootcoin_core::wallet::Wallet::new();
         chain.balances.insert(alice.get_address(), 1_000);
-        let fee_tx = Transaction::new_signed(&alice, "bob".to_string(), 100, 200, 0);
+        let fee_tx = Transaction::new_signed(&alice, "bob".to_string(), 100, 200);
         chain.apply_in_memory(
             next_block(&chain, vec![coinbase_tx("main_a"), fee_tx], GENESIS_TS + 1),
             None,
@@ -2751,14 +2742,14 @@ mod tests {
     #[test]
     fn double_spend_same_tx_across_consecutive_blocks_rejected() {
         // A transaction confirmed in block N must be rejected in block N+1
-        // because the sender's nonce is already incremented past the tx's nonce.
+        // because its signature is already in confirmed_signatures.
         let alice = Wallet::new();
         let bob = Wallet::new();
         let mut chain = make_chain();
         chain.balances.insert(alice.get_address(), 1_000);
 
-        // Block 1: Alice sends to Bob (nonce 0).
-        let tx = Transaction::new_signed(&alice, bob.get_address(), 100, 10, 0);
+        // Block 1: Alice sends to Bob.
+        let tx = Transaction::new_signed(&alice, bob.get_address(), 100, 10);
         let b1 = next_block(
             &chain,
             vec![coinbase_tx("miner"), tx.clone()],
@@ -2770,42 +2761,37 @@ mod tests {
         ));
         assert_eq!(chain.get_balance(&alice.get_address()), 890); // 1000 - 100 - 10
 
-        // Block 2: same transaction (nonce 0) submitted again — nonce is now stale.
+        // Block 2: exact same transaction submitted again — signature already confirmed.
         let b2 = next_block(&chain, vec![coinbase_tx("miner"), tx], GENESIS_TS + 2);
         assert!(
             matches!(chain.apply_in_memory(b2, None), BlockOutcome::Rejected),
-            "block containing a stale nonce must be rejected"
+            "block containing a confirmed signature must be rejected"
         );
         assert_eq!(chain.get_height(), 2); // rejected block must not advance height
         assert_eq!(chain.get_balance(&alice.get_address()), 890); // balance unchanged
     }
 
     #[test]
-    fn double_spend_reorg_resets_account_nonce() {
+    fn double_spend_reorg_removes_confirmed_signature() {
         // When a reorg displaces a block its transactions become unconfirmed.
-        // The sender's account nonce must be rolled back so the displaced tx
-        // can legitimately be re-included on the new canonical chain.
+        // confirmed_signatures must be rolled back so the displaced tx can
+        // legitimately be re-included on the new canonical chain.
         let alice = Wallet::new();
         let bob = Wallet::new();
         // Alice's genesis allocation survives any reorg (genesis is never displaced).
         let mut chain = make_chain_funding(&alice.get_address(), 1_000);
 
-        // Block 1 (main chain): Alice sends to Bob (nonce 0).
-        let tx = Transaction::new_signed(&alice, bob.get_address(), 100, 10, 0);
+        // Block 1 (main chain): Alice sends to Bob.
+        let tx = Transaction::new_signed(&alice, bob.get_address(), 100, 10);
         let b_main = next_block(
             &chain,
             vec![coinbase_tx("main_miner"), tx.clone()],
             GENESIS_TS + 1,
         );
         chain.apply_in_memory(b_main, None);
-        assert_eq!(
-            chain
-                .account_nonces
-                .get(&alice.get_address())
-                .copied()
-                .unwrap_or(0),
-            1,
-            "nonce must be incremented after confirmation"
+        assert!(
+            chain.confirmed_signatures.contains(&tx.signature),
+            "signature must be recorded after confirmation"
         );
 
         // Build a 5-block fork from genesis that does NOT include Alice's tx.
@@ -2830,21 +2816,16 @@ mod tests {
         }
         assert!(saw_reorg, "5-block fork must displace 1-block main chain");
 
-        // Alice's nonce must be reset to 0 by the reorg.
-        assert_eq!(
-            chain
-                .account_nonces
-                .get(&alice.get_address())
-                .copied()
-                .unwrap_or(0),
-            0,
-            "displaced tx nonce must be rolled back after reorg"
+        // Alice's signature must be absent after the reorg removes her tx.
+        assert!(
+            !chain.confirmed_signatures.contains(&tx.signature),
+            "displaced tx signature must be removed from confirmed set after reorg"
         );
 
         // Alice still has her genesis allocation on the fork chain (tx not included).
         assert_eq!(chain.get_balance(&alice.get_address()), 1_000);
 
-        // Alice's tx (nonce 0) can now legitimately be applied on the fork chain.
+        // Alice's tx can now legitimately be applied on the fork chain.
         let b_new = next_block(&chain, vec![coinbase_tx("fork_miner"), tx], GENESIS_TS + 7);
         assert!(
             matches!(chain.apply_in_memory(b_new, None), BlockOutcome::Applied),
@@ -2890,7 +2871,7 @@ mod tests {
         assert_eq!(total_supply(&chain), base + coinbase_rewards, "block 1");
 
         // Block 2: Alice sends to Bob with a fee — only coinbase adds new supply.
-        let tx1 = Transaction::new_signed(&alice, bob.get_address(), 200, 4, 0);
+        let tx1 = Transaction::new_signed(&alice, bob.get_address(), 200, 4);
         chain.apply_in_memory(
             next_block(&chain, vec![coinbase_tx("m2"), tx1], GENESIS_TS + 2),
             None,
@@ -2903,7 +2884,7 @@ mod tests {
         );
 
         // Block 3: Bob sends back with an odd fee (remainder stays in pot).
-        let tx2 = Transaction::new_signed(&bob, alice.get_address(), 50, 5, 0);
+        let tx2 = Transaction::new_signed(&bob, alice.get_address(), 50, 5);
         chain.apply_in_memory(
             next_block(&chain, vec![coinbase_tx("m3"), tx2], GENESIS_TS + 3),
             None,
@@ -2925,12 +2906,12 @@ mod tests {
         original.seed_pot(100_000);
 
         // Apply two blocks with real transactions to build non-trivial state.
-        let tx1 = Transaction::new_signed(&alice, bob.get_address(), 100, 4, 0);
+        let tx1 = Transaction::new_signed(&alice, bob.get_address(), 100, 4);
         original.apply_in_memory(
             next_block(&original, vec![coinbase_tx("miner"), tx1], GENESIS_TS + 1),
             None,
         );
-        let tx2 = Transaction::new_signed(&alice, bob.get_address(), 50, 4, 1);
+        let tx2 = Transaction::new_signed(&alice, bob.get_address(), 50, 4);
         original.apply_in_memory(
             next_block(&original, vec![coinbase_tx("miner"), tx2], GENESIS_TS + 2),
             None,
@@ -2980,7 +2961,7 @@ mod tests {
         assert_eq!(restored.get_height(), original.get_height(), "height");
 
         // Applying the same next block on both must produce identical state.
-        let tx3 = Transaction::new_signed(&alice, bob.get_address(), 25, 4, 2);
+        let tx3 = Transaction::new_signed(&alice, bob.get_address(), 25, 4);
         let next = next_block(&original, vec![coinbase_tx("miner"), tx3], GENESIS_TS + 3);
 
         assert!(matches!(

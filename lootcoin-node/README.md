@@ -87,6 +87,25 @@ Rebuild and redeploy. Nodes running this binary will now advertise and serve a s
 
 ---
 
+### Transaction replay protection
+
+Lootcoin uses **signature-based replay protection** rather than sequential per-sender nonces.
+
+When `Transaction::new_signed` is called, a cryptographically random 64-bit nonce is generated and included in the signed message. Because the nonce is part of the signed payload, two calls with identical sender, receiver, amount, and fee still produce **distinct signatures**. The node tracks every confirmed transaction's Ed25519 signature in a `confirmed_signatures` set; a second submission of the same signature bytes is rejected as a replay.
+
+**What this means for clients:**
+
+- No coordination between clients is needed — the CLI and the browser wallet can both submit transactions simultaneously without fetching or tracking a `next_nonce`
+- No "nonce conflict" errors when submitting from multiple devices
+- The `GET /balance/:address` response only includes `balance` and `spendable_balance`; there is no `next_nonce` field
+
+**Security properties:**
+
+- The signed message includes a `CHAIN_ID` constant (`b"lootcoin-mainnet-1"`), so a valid signature produced for mainnet is invalid on any other chain
+- Ed25519 signatures are deterministic given the same key and message; the random nonce ensures the signed message is unique even for otherwise identical transactions
+
+---
+
 ### Hash function
 
 Lootcoin uses [CubeHash-256](https://en.wikipedia.org/wiki/CubeHash) instead of SHA-256. CubeHash is a NIST SHA-3 finalist designed to be simple, parallelisable, and resistant to length-extension attacks.

@@ -7,7 +7,7 @@ license.workspace = true
 description = "Faucet service for bootstrapping the Lootcoin network"
 
 [dependencies]
-lootcoin-core = "3.0"
+lootcoin-core = "3.1"
 
 axum          = "0.8"
 tokio         = { version = "1.39", features = ["macros", "rt-multi-thread", "signal"] }

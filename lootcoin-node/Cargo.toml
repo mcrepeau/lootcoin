@@ -9,7 +9,7 @@ repository = "https://github.com/mcrepeau/lootcoin-node"
 readme = "README.md"
 
 [dependencies]
-lootcoin-core = "3.0"
+lootcoin-core = "3.1"
 
 # Server and async runtime
 axum          = "0.8"

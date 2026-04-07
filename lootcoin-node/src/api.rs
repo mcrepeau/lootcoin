@@ -158,8 +158,6 @@ pub struct BalanceResponse {
     pub balance: u64,
     /// Balance minus pending mempool debits — the amount safely spendable right now.
     pub spendable_balance: u64,
-    /// Next expected nonce for this address. Submit this value in your next transaction.
-    pub next_nonce: u64,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -207,7 +205,7 @@ pub struct SnapshotPayload {
     pub height: u64,
     pub block_hash_hex: String,
     pub balances: HashMap<String, u64>,
-    pub account_nonces: HashMap<String, u64>,
+    pub confirmed_signatures: Vec<Vec<u8>>,
     pub pot: u64,
     pub chain_work_hex: String,
     pub current_difficulty: f64,
@@ -330,7 +328,6 @@ async fn apply_incoming_block(state: &AppState, block: Block) -> Result<bool, &'
                 pool.readd_displaced(
                     &old_block.transactions,
                     |addr| chain.get_balance(addr),
-                    |addr| chain.get_nonce(addr),
                     height,
                 );
             }
@@ -574,24 +571,15 @@ pub async fn get_balance_handler(
 ) -> Json<BalanceResponse> {
     let chain = state.chain.read().await;
     let balance = chain.get_balance(&address);
-    let confirmed_nonce = chain.get_nonce(&address);
     drop(chain);
     let pool = state.mempool.read().await;
     let pending = pool.pending_debit(&address);
-    // If this address already has a tx in the mempool, the next valid nonce is
-    // one above the pending tx's nonce.  Returning the confirmed nonce would
-    // cause two rapid submissions from the same address to clobber each other.
-    let next_nonce = pool
-        .pending_nonce(&address)
-        .map(|n| n + 1)
-        .unwrap_or(confirmed_nonce);
     drop(pool);
     let spendable_balance = balance.saturating_sub(pending);
     Json(BalanceResponse {
         address,
         balance,
         spendable_balance,
-        next_nonce,
     })
 }
 
@@ -1178,7 +1166,7 @@ pub async fn get_snapshot_handler(
         height,
         block_hash_hex: local_hash,
         balances: cp.balances,
-        account_nonces: cp.account_nonces,
+        confirmed_signatures: cp.confirmed_signatures.into_iter().collect(),
         pot: cp.pot,
         chain_work_hex: format!("{:032x}", cp.chain_work),
         current_difficulty: cp.current_difficulty,
@@ -1420,7 +1408,6 @@ mod tests {
         assert_eq!(body["balance"], 10_000);
         assert_eq!(body["spendable_balance"], 10_000);
         assert_eq!(body["address"], addr);
-        assert_eq!(body["next_nonce"], 0); // no outbound txs yet
     }
 
     #[tokio::test]
@@ -1446,32 +1433,41 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn balance_next_nonce_advances_when_tx_in_mempool() {
-        // Two rapid requests from the same address must not both see next_nonce=0.
-        // Once a pending tx with nonce=0 is in the mempool, next_nonce must be 1.
+    async fn balance_multiple_pending_txs_all_deducted_from_spendable() {
+        // With random nonces, multiple concurrent pending txs from the same sender
+        // should all be reflected in spendable_balance.
         let wallet = test_wallet();
         let addr = wallet.get_address();
         let state = make_state(&wallet);
 
-        // Confirm no pending tx: next_nonce should be the confirmed value (0).
-        let body = json_body(get_req(state.clone(), &format!("/balance/{}", addr)).await).await;
-        assert_eq!(body["next_nonce"], 0);
-
-        // Simulate a pending outbound tx with nonce=0 (the first submission).
-        let pending = Transaction {
+        let tx1 = Transaction {
             sender: addr.clone(),
             receiver: "bob".to_string(),
-            amount: 500,
+            amount: 100,
             fee: 2,
-            nonce: 0,
+            nonce: 111,
             public_key: [0u8; 32],
             signature: vec![0xBB],
         };
-        state.mempool.write().await.add_transaction(pending, 1);
+        let tx2 = Transaction {
+            sender: addr.clone(),
+            receiver: "carol".to_string(),
+            amount: 200,
+            fee: 2,
+            nonce: 222,
+            public_key: [0u8; 32],
+            signature: vec![0xCC],
+        };
+        {
+            let mut pool = state.mempool.write().await;
+            pool.add_transaction(tx1, 1);
+            pool.add_transaction(tx2, 1);
+        }
 
-        // next_nonce must now be 1 so a second submission doesn't clobber the first.
         let body = json_body(get_req(state, &format!("/balance/{}", addr)).await).await;
-        assert_eq!(body["next_nonce"], 1);
+        assert_eq!(body["balance"], 10_000);
+        // spendable = 10_000 - (102 + 202)
+        assert_eq!(body["spendable_balance"], 10_000 - 304);
     }
 
     // ── GET /chain/head ───────────────────────────────────────────────────────
@@ -1915,7 +1911,7 @@ mod tests {
         let state = make_state(&wallet);
         // Use a valid lootcoin address as receiver (derived from a fixed key so the test is deterministic).
         let receiver_addr = Wallet::from_secret_key_bytes([2u8; 32]).get_address();
-        let tx = Transaction::new_signed(&wallet, receiver_addr, 100, 2, 0);
+        let tx = Transaction::new_signed(&wallet, receiver_addr, 100, 2);
         let resp = post_json(
             state,
             "/transactions",
@@ -1941,7 +1937,7 @@ mod tests {
         let wallet = test_wallet();
         let state = make_state(&wallet);
         // Wallet only has 10_000; try to spend far more
-        let tx = Transaction::new_signed(&wallet, "bob".to_string(), 999_999, 2, 0);
+        let tx = Transaction::new_signed(&wallet, "bob".to_string(), 999_999, 2);
         let resp = post_json(
             state,
             "/transactions",
@@ -1964,7 +1960,7 @@ mod tests {
         let wallet = test_wallet();
         let state = make_state(&wallet);
         // Fee = 1, below MIN_TX_FEE = 2
-        let tx = Transaction::new_signed(&wallet, "bob".to_string(), 10, 1, 0);
+        let tx = Transaction::new_signed(&wallet, "bob".to_string(), 10, 1);
         let resp = post_json(
             state,
             "/transactions",
@@ -2330,7 +2326,7 @@ mod tests {
     async fn submit_tx_invalid_receiver_address_returns_400() {
         let wallet = test_wallet();
         let state = make_state(&wallet);
-        let tx = Transaction::new_signed(&wallet, "not-an-address".to_string(), 100, 2, 0);
+        let tx = Transaction::new_signed(&wallet, "not-an-address".to_string(), 100, 2);
         let resp = post_json(
             state,
             "/transactions",

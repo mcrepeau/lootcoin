@@ -289,12 +289,11 @@ async function submitTransaction() {
 
   if (!await confirmSend(receiver, amount, fee)) return;
 
-  // Fetch next_nonce immediately before signing to avoid stale nonces.
-  const addr = byId("address").textContent;
-  const balRes = await fetch(`${base()}/balance/${addr}`);
-  if (!balRes.ok) { setErr("Failed to fetch nonce from node."); return; }
-  const balData = await balRes.json();
-  const nonce = BigInt(balData.next_nonce);
+  // Generate a random 64-bit nonce for replay protection.
+  // No coordination with other clients or pending transactions required.
+  const nonceBytes = new Uint32Array(2);
+  crypto.getRandomValues(nonceBytes);
+  const nonce = (BigInt(nonceBytes[0]) << 32n) | BigInt(nonceBytes[1]);
 
   const submission = wallet.sign_transaction(receiver, amount, fee, nonce);
   const payload = JSON.parse(submission);

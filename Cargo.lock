@@ -985,9 +985,9 @@ checksum = "5e5032e24019045c762d3c0f28f5b6b8bbf38563a65908389bf7978758920897"
 
 [[package]]
 name = "lootcoin-core"
-version = "3.0.0"
+version = "3.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "39683861779e70aee02ae2403ad39bb997dd6d1cabe9023f547b5dcbc0f6ed9e"
+checksum = "1f0357a6ecf25081f2da391bca70ad28e6091bbec177d6846790b69b29923278"
 dependencies = [
  "bech32",
  "bincode",
@@ -1000,7 +1000,7 @@ dependencies = [
 
 [[package]]
 name = "lootcoin-faucet"
-version = "3.0.0"
+version = "3.1.0"
 dependencies = [
  "axum",
  "hex",
@@ -1017,7 +1017,7 @@ dependencies = [
 
 [[package]]
 name = "lootcoin-miner"
-version = "3.0.0"
+version = "3.1.0"
 dependencies = [
  "anyhow",
  "cudarc",
@@ -1035,7 +1035,7 @@ dependencies = [
 
 [[package]]
 name = "lootcoin-node"
-version = "3.0.0"
+version = "3.1.0"
 dependencies = [
  "axum",
  "axum-client-ip",
@@ -1062,7 +1062,7 @@ dependencies = [
 
 [[package]]
 name = "lootcoin-wallet"
-version = "3.0.0"
+version = "3.1.0"
 dependencies = [
  "bip39",
  "clap",

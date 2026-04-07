@@ -124,7 +124,6 @@ struct ErrorResponse {
 #[derive(Deserialize)]
 struct NodeBalanceResponse {
     spendable_balance: u64,
-    next_nonce: u64,
 }
 
 #[derive(Serialize)]
@@ -222,13 +221,13 @@ async fn handle_dispense(
         return Err(err(StatusCode::SERVICE_UNAVAILABLE, "Faucet is empty."));
     }
 
-    // 4. Sign and submit the transaction.
+    // 4. Sign and submit the transaction. The random nonce is generated
+    // internally by new_signed, ensuring each dispense has a unique signature.
     let tx = Transaction::new_signed(
         &state.wallet,
         req.address.clone(),
         state.dispense_amount,
         state.fee,
-        balance.next_nonce,
     );
     let txid = hex::encode(tx.txid());
 

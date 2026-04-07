@@ -350,7 +350,7 @@ async fn fetch_peer_snapshot(
 
         let state = blockchain::CheckpointState {
             balances: payload.balances,
-            account_nonces: payload.account_nonces,
+            confirmed_signatures: payload.confirmed_signatures.into_iter().collect(),
             pot: payload.pot,
             chain_work,
             block_hash: cp_block.hash.clone(),
@@ -731,8 +731,8 @@ async fn main() {
                 entries
                     .into_iter()
                     .filter(|(tx, added_height)| {
-                        // Drop txs whose nonce has already been consumed on-chain.
-                        let is_stale = c.get_nonce(&tx.sender) > tx.nonce;
+                        // Drop txs whose signature has already been confirmed on-chain.
+                        let is_stale = c.confirmed_signatures.contains(&tx.signature);
                         let is_expired = current_height.saturating_sub(*added_height)
                             > mempool::TX_EXPIRY_BLOCKS;
                         !is_stale && !is_expired
