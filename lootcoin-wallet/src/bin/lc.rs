@@ -315,15 +315,6 @@ fn cmd_send(
     println!("To:     {}", receiver);
     println!("Amount: {} coins", amount);
     println!("Fee:    {} coins  (total debit: {})", fee, amount + fee);
-
-    // How many blocks before this tx becomes eligible for inclusion.
-    let wait = (120u64 / fee).saturating_sub(1);
-    if wait > 0 {
-        println!(
-            "Wait:   ~{} blocks (~{} min) before miners can include this tx",
-            wait, wait
-        );
-    }
     println!();
 
     eprint!("Confirm? [y/N] ");
