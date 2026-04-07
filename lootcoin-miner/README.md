@@ -1,6 +1,6 @@
 # lootcoin-miner
 
-CPU miner for Lootcoin. Fetches pending transactions from a node, assembles a block, and searches for a proof-of-work nonce that satisfies the current difficulty target.
+Miner for Lootcoin. Fetches pending transactions from a node, assembles a block, and searches for a proof-of-work nonce that satisfies the current difficulty target. Supports both CPU and NVIDIA GPU mining.
 
 ---
 
@@ -16,6 +16,34 @@ The miner proceeds even when the mempool is empty: coinbase-only blocks still ea
 
 ---
 
+## GPU mining (NVIDIA)
+
+The miner includes a CUDA kernel that runs the CubeHash-256 proof-of-work search on an NVIDIA GPU. Each kernel launch tests ~4M nonces in parallel. On an NVIDIA GeForce RTX 5070Ti, we get a 600x speedup over a single Intel Core Ultra 7 265K CPU core.
+
+**Requirements:**
+
+- NVIDIA GPU with CUDA support
+- CUDA Toolkit installed (`nvcc` must be on `PATH` at build time)
+- CUDA driver compatible with your toolkit version
+
+**Building with GPU support:**
+
+```bash
+cargo build --release -p lootcoin-miner --features gpu
+```
+
+**Running with GPU:**
+
+```bash
+USE_GPU=1 MINER_ADDRESS=loot1… ./target/release/lootcoin-miner
+```
+
+If `USE_GPU=1` is set but the GPU fails to initialise (wrong driver, no device, etc.) the miner logs a warning and falls back to CPU automatically. If the binary was built without `--features gpu`, `USE_GPU` is ignored.
+
+Only device 0 is used. Multi-GPU support is not currently implemented.
+
+---
+
 ## Configuration
 
 All configuration is via environment variables.
@@ -24,6 +52,7 @@ All configuration is via environment variables.
 |----------|----------|---------|-------------|
 | `MINER_ADDRESS` | Yes | — | bech32m payout address (`loot1…`) — generate one with the wallet UI |
 | `NODE_URLS` | No | `http://127.0.0.1:3000` | Comma-separated node API URLs |
+| `USE_GPU` | No | `0` | Set to `1` to enable GPU mining (requires build with `--features gpu`) |
 | `RUST_LOG` | No | `info` | Tracing log filter |
 
 The miner tries each URL in order and uses the first that responds. If the active node goes down, the next attempt picks another.
@@ -33,12 +62,16 @@ The miner tries each URL in order and uses the first that responds. If the activ
 ## Running
 
 ```bash
+# CPU mining
 MINER_ADDRESS=loot1… cargo run -p lootcoin-miner
 
-# Multiple nodes
+# CPU mining — multiple nodes
 NODE_URLS=http://127.0.0.1:3000,http://127.0.0.1:3001 \
 MINER_ADDRESS=loot1… \
 cargo run -p lootcoin-miner
+
+# GPU mining (requires --features gpu at build time)
+USE_GPU=1 MINER_ADDRESS=loot1… cargo run -p lootcoin-miner --features gpu
 ```
 
 The miner loops continuously. Each successful block earns a lottery ticket (see `lootcoin-node` README for lottery details).
