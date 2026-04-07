@@ -45,20 +45,48 @@ jobs:
         if: runner.os != 'Windows'
         run: strip target/${{ matrix.target }}/release/lc
 
+      - name: Generate completions and man page (Unix)
+        if: runner.os != 'Windows'
+        run: |
+          BIN=target/${{ matrix.target }}/release/lc
+          mkdir -p extras/completions extras/man
+          "$BIN" completions bash > extras/completions/lc.bash
+          "$BIN" completions zsh  > extras/completions/lc.zsh
+          "$BIN" completions fish > extras/completions/lc.fish
+          "$BIN" man              > extras/man/lc.1
+
+      - name: Generate completions and man page (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $BIN = "target\${{ matrix.target }}\release\lc.exe"
+          New-Item -ItemType Directory -Force extras/completions, extras/man | Out-Null
+          & $BIN completions bash       | Set-Content -Encoding utf8NoBOM extras/completions/lc.bash
+          & $BIN completions zsh        | Set-Content -Encoding utf8NoBOM extras/completions/lc.zsh
+          & $BIN completions fish       | Set-Content -Encoding utf8NoBOM extras/completions/lc.fish
+          & $BIN completions powershell | Set-Content -Encoding utf8NoBOM extras/completions/lc.ps1
+          & $BIN man                    | Set-Content -Encoding utf8NoBOM extras/man/lc.1
+
       - name: Package (Unix)
         if: runner.os != 'Windows'
         run: |
-          cd target/${{ matrix.target }}/release
-          tar czf "$GITHUB_WORKSPACE/lc-${{ github.ref_name }}-${{ matrix.target }}.tar.gz" lc
-          echo "ASSET=lc-${{ github.ref_name }}-${{ matrix.target }}.tar.gz" >> "$GITHUB_ENV"
+          STAGING="lc-${{ github.ref_name }}-${{ matrix.target }}"
+          mkdir "$STAGING"
+          cp target/${{ matrix.target }}/release/lc "$STAGING/"
+          cp -r extras/completions extras/man "$STAGING/"
+          tar czf "${STAGING}.tar.gz" "$STAGING"
+          echo "ASSET=${STAGING}.tar.gz" >> "$GITHUB_ENV"
 
       - name: Package (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          cd target/${{ matrix.target }}/release
-          Compress-Archive lc.exe "$env:GITHUB_WORKSPACE\lc-${{ github.ref_name }}-${{ matrix.target }}.zip"
-          "ASSET=lc-${{ github.ref_name }}-${{ matrix.target }}.zip" | Out-File -FilePath $env:GITHUB_ENV -Append
+          $STAGING = "lc-${{ github.ref_name }}-${{ matrix.target }}"
+          New-Item -ItemType Directory $STAGING | Out-Null
+          Copy-Item "target\${{ matrix.target }}\release\lc.exe" "$STAGING\"
+          Copy-Item -Recurse extras/completions, extras/man "$STAGING\"
+          Compress-Archive "$STAGING" "${STAGING}.zip"
+          "ASSET=${STAGING}.zip" | Out-File -FilePath $env:GITHUB_ENV -Append
 
       - uses: actions/upload-artifact@v4
         with:

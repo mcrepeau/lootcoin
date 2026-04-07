@@ -1,5 +1,6 @@
 use bip39::Mnemonic;
-use clap::{Parser, Subcommand};
+use clap::{CommandFactory, Parser, Subcommand};
+use clap_complete::{generate, Shell};
 use lootcoin_core::{transaction::Transaction, wallet::Wallet};
 use lootcoin_wallet::derivation::key_from_mnemonic;
 use rand::{rngs::OsRng, RngCore};
@@ -59,6 +60,22 @@ enum Commands {
     },
     /// Show current chain status
     Status,
+    /// Print shell completions to stdout
+    ///
+    /// Examples:
+    ///   lc completions bash  >> ~/.bash_completion
+    ///   lc completions zsh   >  ~/.zfunc/_lc  (then add ~/.zfunc to $fpath)
+    ///   lc completions fish  >  ~/.config/fish/completions/lc.fish
+    Completions {
+        /// Target shell
+        shell: Shell,
+    },
+    /// Print the man page to stdout
+    ///
+    /// Example:
+    ///   lc man | man -l -
+    #[command(hide = true)]
+    Man,
 }
 
 // ── Wallet file ───────────────────────────────────────────────────────────────
@@ -146,11 +163,23 @@ struct ChainHead {
 
 fn main() {
     let cli = Cli::parse();
-    let wallet_path = cli.wallet.unwrap_or_else(default_wallet_path);
+    let wallet_path = cli.wallet.clone().unwrap_or_else(default_wallet_path);
 
-    if let Err(e) = run(cli.command, &cli.node, &wallet_path) {
-        eprintln!("error: {}", e);
-        std::process::exit(1);
+    match cli.command {
+        Commands::Completions { shell } => {
+            generate(shell, &mut Cli::command(), "lc", &mut std::io::stdout());
+        }
+        Commands::Man => {
+            clap_mangen::Man::new(Cli::command())
+                .render(&mut std::io::stdout())
+                .expect("failed to render man page");
+        }
+        cmd => {
+            if let Err(e) = run(cmd, &cli.node, &wallet_path) {
+                eprintln!("error: {}", e);
+                std::process::exit(1);
+            }
+        }
     }
 }
 
@@ -174,6 +203,8 @@ fn run(cmd: Commands, node: &str, wallet_path: &PathBuf) -> Result<(), String> {
             cmd_history(&client, node, wallet_path, address, limit)
         }
         Commands::Status => cmd_status(&client, node),
+        // Handled in main() before run() is called.
+        Commands::Completions { .. } | Commands::Man => unreachable!(),
     }
 }
 
