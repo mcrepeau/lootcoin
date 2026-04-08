@@ -23,7 +23,7 @@ let networkStats = null;
 let feeStats = null;
 
 const byId = (id) => document.getElementById(id);
-function base() { return (window.LOOTCOIN_NODE_URL || "http://127.0.0.1:3001").replace(/\/+$/, ""); }
+function base() { return window.LOOTCOIN_NODE_URL.replace(/\/+$/, ""); }
 
 function setWalletInfo(w) {
   wallet = w;

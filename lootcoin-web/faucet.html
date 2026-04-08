@@ -69,7 +69,7 @@
 
 <script src="config.js"></script>
 <script>
-  const faucetUrl = () => (window.LOOTCOIN_FAUCET_URL || 'http://127.0.0.1:3030').replace(/\/+$/, '');
+  const faucetUrl = () => window.LOOTCOIN_FAUCET_URL.replace(/\/+$/, '');
 
   const addressInput = document.getElementById('addressInput');
   const requestBtn   = document.getElementById('requestBtn');

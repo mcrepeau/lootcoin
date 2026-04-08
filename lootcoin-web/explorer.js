@@ -13,7 +13,7 @@ let isLoading = false;
 let allLoaded = false;
 
 function base() {
-  return (window.LOOTCOIN_NODE_URL || "http://127.0.0.1:3001").replace(/\/+$/, "");
+  return window.LOOTCOIN_NODE_URL.replace(/\/+$/, "");
 }
 
 function fmtTime(ts) {

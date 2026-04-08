@@ -13,7 +13,7 @@ use std::{fs, path::PathBuf};
 #[command(name = "lc", about = "Lootcoin CLI wallet", version)]
 struct Cli {
     /// Node base URL
-    #[arg(long, env = "LOOTCOIN_NODE", default_value = "http://127.0.0.1:3000")]
+    #[arg(long, env = "LOOTCOIN_NODE", default_value = "https://node1.lootcoin.org")]
     node: String,
 
     /// Path to wallet file
