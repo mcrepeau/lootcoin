@@ -1,14 +1,33 @@
 # Lootcoin
 
-A proof-of-work blockchain with a **lottery-based fee mechanism**: half of every transaction fee goes directly to the miner who includes it; the other half accumulates in a shared pot. Every block that contains at least one transaction earns the miner a deferred lottery ticket, awarding a random fraction of that pot.
+A simple proof-of-work blockchain with a **lottery-based reward mechanism**
 
 ---
 
 ## Concept
 
-In Bitcoin, miners collect transaction fees directly. In Lootcoin, every fee paid by a sender is added to a shared pot. Every time a miner mines a block they receive a **lottery ticket**. After a 100-block reveal window, each ticket is settled against the accumulated block-hash entropy as provably-fair randomness. The payout is a fraction of the pot — small wins are common, jackpots are rare.
+In Bitcoin, miners collect transaction fees directly. In Lootcoin, every time a miner mines a block that includes transactions they receive a **lottery ticket** in addition to a share of the transaction fees. After a 100-block reveal window, each ticket is settled against the accumulated block-hash entropy as provably-fair randomness. The payout is a fraction of the pot — small wins are common, jackpots are rare.
 
 This creates a different incentive structure: miners are rewarded not just for the block they mine, but for a delayed probabilistic payout that depends on future miners' work, making the system self-reinforcing.
+
+---
+
+## Hash function and key parameters
+
+Lootcoin uses [CubeHash-256](https://en.wikipedia.org/wiki/CubeHash) instead of SHA-256. CubeHash is a NIST SHA-3 finalist designed to be simple, parallelisable, and resistant to length-extension attacks.
+
+| Parameter                          | Value |
+|------------------------------------|---|
+| **Hash function**                  | CubeHash-256 |
+| **Signing algorithm**              | Ed25519 |
+| **Address format**                 | bech32m (`loot1…`) |
+| **Block time target**              | 60 seconds |
+| **Difficulty algorithm**           | ASERT (per-block, 1-hour halflife) |
+| **Difficulty granularity**         | Fractional bits (sub-bit precision) |
+| **Fork selection**                 | Most accumulated work (Σ 2^bits) |
+| **Coinbase reward**                | 1 coin per block |
+| **Max non-coinbase txs per block** | 240 |
+| **Reveal window**                  | 100 blocks |
 
 ---
 
@@ -38,7 +57,7 @@ Payouts are a flat fraction of the current pot — independent of how many trans
 
 ## Repository layout
 
-This is a Cargo workspace. `lootcoin-core` is a separate library published on [crates.io](https://crates.io/crates/lootcoin-core).
+This is a Cargo workspace. [`lootcoin-core`](https://github.com/mcrepeau/lootcoin-core) is a separate library published on [crates.io](https://crates.io/crates/lootcoin-core).
 
 | Directory | What it is |
 |---|---|
@@ -52,20 +71,7 @@ This is a Cargo workspace. `lootcoin-core` is a separate library published on [c
 
 ## Quick start with Docker
 
-```bash
-cp .env.example .env
-# Edit .env — set FAUCET_SECRET_KEY and MINER_ADDRESS
-docker compose up --build
-```
-
-This starts:
-- 3 nodes on ports 3001, 3002, 3003
-- 1 miner pointed at all three nodes
-- Faucet on port 3030
-- Web UI on port 8888
-- Persistent storage via named Docker volumes
-
-The web UI defaults to connecting to `http://127.0.0.1:3001`. To point it at a different node, mount a custom `config.js` (see [Web UI configuration](#web-ui-configuration)).
+See [QUICKSTART Guide](QUICKSTART.md) to get a local chain running, mine your first block, and send coins in ~15 minutes
 
 ---
 
@@ -134,58 +140,6 @@ The web UI requires a running node. By default it points at `http://127.0.0.1:30
 
 ---
 
-## Monitoring with Prometheus
-
-Every node exposes a Prometheus metrics endpoint at `GET /metrics`. Add a Prometheus instance to your `docker-compose.yml` to scrape it:
-
-```yaml
-services:
-  prometheus:
-    image: prom/prometheus:latest
-    ports:
-      - "9090:9090"
-    volumes:
-      - prometheus-data:/prometheus
-    command:
-      - --config.file=/etc/prometheus/prometheus.yml
-      - --storage.tsdb.retention.time=30d
-    configs:
-      - source: prometheus_config
-        target: /etc/prometheus/prometheus.yml
-
-configs:
-  prometheus_config:
-    content: |
-      global:
-        scrape_interval: 15s
-
-      scrape_configs:
-        - job_name: lootcoin-node
-          static_configs:
-            - targets:
-                - node:3000
-
-volumes:
-  prometheus-data:
-```
-
-Then open `http://localhost:9090` to query metrics. Key metrics exposed:
-
-| Metric | Type | Description |
-|---|---|---|
-| `lootcoin_chain_height` | Gauge | Current chain height in blocks |
-| `lootcoin_chain_difficulty` | Gauge | Current mining difficulty in fractional bits |
-| `lootcoin_avg_block_time_secs` | Gauge | Rolling average block time over the last 10 blocks |
-| `lootcoin_pot_coins` | Gauge | Current lottery pot balance |
-| `lootcoin_circulating_coins` | Gauge | Coins in circulation |
-| `lootcoin_mempool_size` | Gauge | Pending transactions |
-| `lootcoin_peer_count` | Gauge | Known peers |
-| `lootcoin_fees_collected_total` | Counter | Cumulative transaction fees collected |
-| `lootcoin_lottery_wins_total` | Counter | Lottery wins by tier (`small`, `medium`, `large`, `jackpot`) |
-| `lootcoin_blocks_total` | Counter | Cumulative blocks applied to the chain |
-
----
-
 ## Web UI configuration
 
 The node and faucet URLs are set at runtime via `config.js`. The default bundled in the Docker image works for local docker-compose. For any other deployment, mount your own:
@@ -204,23 +158,6 @@ services:
     volumes:
       - ./config.js:/usr/share/nginx/html/config.js:ro
 ```
-
----
-
-## Key parameters
-
-| Parameter | Value |
-|---|---|
-| Hash function | CubeHash-256 |
-| Signing algorithm | Ed25519 |
-| Address format | bech32m (`loot1…`) |
-| Block time target | 60 seconds |
-| Difficulty algorithm | ASERT (per-block, 1-hour halflife) |
-| Difficulty granularity | Fractional bits (sub-bit precision) |
-| Fork selection | Most accumulated work (Σ 2^bits) |
-| Coinbase reward | 1 coin per block |
-| Max non-coinbase txs per block | 240 |
-| Reveal window | 100 blocks |
 
 ---
 
