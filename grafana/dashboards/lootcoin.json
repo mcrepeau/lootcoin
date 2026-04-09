@@ -314,9 +314,8 @@
           "color": { "mode": "palette-classic" },
           "custom": {
             "lineWidth": 2,
-            "fillOpacity": 20,
+            "fillOpacity": 10,
             "showPoints": "never",
-            "stacking": { "mode": "normal", "group": "A" },
             "spanNulls": false
           }
         },
@@ -427,22 +426,22 @@
       "datasource": { "type": "prometheus", "uid": "${datasource}" },
       "targets": [
         {
-          "expr": "rate(lootcoin_lottery_wins_total{instance=~\"$instance\", tier=\"small\"}[$__rate_interval]) * 60",
+          "expr": "rate(lootcoin_lottery_wins_total{instance=~\"$instance\", tier=\"small\"}[$__range]) * 60",
           "legendFormat": "small",
           "refId": "A"
         },
         {
-          "expr": "rate(lootcoin_lottery_wins_total{instance=~\"$instance\", tier=\"medium\"}[$__rate_interval]) * 60",
+          "expr": "rate(lootcoin_lottery_wins_total{instance=~\"$instance\", tier=\"medium\"}[$__range]) * 60",
           "legendFormat": "medium",
           "refId": "B"
         },
         {
-          "expr": "rate(lootcoin_lottery_wins_total{instance=~\"$instance\", tier=\"large\"}[$__rate_interval]) * 60",
+          "expr": "rate(lootcoin_lottery_wins_total{instance=~\"$instance\", tier=\"large\"}[$__range]) * 60",
           "legendFormat": "large",
           "refId": "C"
         },
         {
-          "expr": "rate(lootcoin_lottery_wins_total{instance=~\"$instance\", tier=\"jackpot\"}[$__rate_interval]) * 60",
+          "expr": "rate(lootcoin_lottery_wins_total{instance=~\"$instance\", tier=\"jackpot\"}[$__range]) * 60",
           "legendFormat": "jackpot",
           "refId": "D"
         }
@@ -491,22 +490,22 @@
       "datasource": { "type": "prometheus", "uid": "${datasource}" },
       "targets": [
         {
-          "expr": "rate(lootcoin_lottery_payouts_coins_total{instance=~\"$instance\", tier=\"small\"}[$__rate_interval])",
+          "expr": "rate(lootcoin_lottery_payouts_coins_total{instance=~\"$instance\", tier=\"small\"}[$__range])",
           "legendFormat": "small",
           "refId": "A"
         },
         {
-          "expr": "rate(lootcoin_lottery_payouts_coins_total{instance=~\"$instance\", tier=\"medium\"}[$__rate_interval])",
+          "expr": "rate(lootcoin_lottery_payouts_coins_total{instance=~\"$instance\", tier=\"medium\"}[$__range])",
           "legendFormat": "medium",
           "refId": "B"
         },
         {
-          "expr": "rate(lootcoin_lottery_payouts_coins_total{instance=~\"$instance\", tier=\"large\"}[$__rate_interval])",
+          "expr": "rate(lootcoin_lottery_payouts_coins_total{instance=~\"$instance\", tier=\"large\"}[$__range])",
           "legendFormat": "large",
           "refId": "C"
         },
         {
-          "expr": "rate(lootcoin_lottery_payouts_coins_total{instance=~\"$instance\", tier=\"jackpot\"}[$__rate_interval])",
+          "expr": "rate(lootcoin_lottery_payouts_coins_total{instance=~\"$instance\", tier=\"jackpot\"}[$__range])",
           "legendFormat": "jackpot",
           "refId": "D"
         }
