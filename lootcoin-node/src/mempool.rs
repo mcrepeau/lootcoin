@@ -1,17 +1,28 @@
 use crate::db::Db;
+use lootcoin_core::block::MAX_BLOCK_TXS;
+use lootcoin_core::lottery::{GUARANTEE_AFTER, MIN_TX_FEE};
 use lootcoin_core::transaction::Transaction;
 use serde::Serialize;
 use std::collections::HashMap;
 use std::sync::Arc;
 
 #[derive(Serialize)]
-pub struct FeeStats {
-    pub count: usize,
-    pub min: Option<u64>,
-    pub max: Option<u64>,
-    pub median: Option<u64>,
-    pub p25: Option<u64>,
-    pub p75: Option<u64>,
+pub struct FeeEstimate {
+    /// Requested confirmation target (blocks).
+    pub target_blocks: u64,
+    /// Mempool fullness: `pending_count / MAX_BLOCK_TXS`.
+    /// Below 1.0 the network has spare capacity and any valid fee is sufficient.
+    /// At or above 1.0 the block is full and fee-tier eligibility gates inclusion.
+    pub utilization: f64,
+    /// Fee recommended to get mined within `target_blocks`.
+    /// `MIN_TX_FEE` when `utilization < 1.0`; otherwise
+    /// `max(eligibility_floor, cutoff_fee + 1)` where the eligibility floor is
+    /// derived from `⌈GUARANTEE_AFTER / (target_blocks + 1)⌉` and the cutoff
+    /// is the lowest fee among the top `MAX_BLOCK_TXS` pending transactions.
+    pub recommended_fee: u64,
+    /// Median fee of all pending transactions.
+    /// `null` only when the pool is empty.
+    pub median_fee: Option<u64>,
 }
 
 pub const MAX_MEMPOOL_SIZE: usize = 10_000;
@@ -215,30 +226,52 @@ impl Mempool {
         }
     }
 
-    /// Returns fee distribution statistics across all pending transactions.
-    pub fn fee_stats(&self) -> FeeStats {
-        let mut fees: Vec<u64> = self.entries.values().map(|e| e.tx.fee).collect();
-        let count = fees.len();
-        if count == 0 {
-            return FeeStats {
-                count: 0,
-                min: None,
-                max: None,
-                median: None,
-                p25: None,
-                p75: None,
-            };
-        }
-        fees.sort_unstable();
-        FeeStats {
-            count,
-            min: Some(fees[0]),
-            max: Some(fees[count - 1]),
-            median: Some(fees[count / 2]),
-            p25: Some(fees[count / 4]),
-            p75: Some(fees[count * 3 / 4]),
+    /// Returns a fee recommendation for `target_blocks` confirmation.
+    ///
+    /// When `utilization < 1.0` (spare block capacity), every valid transaction
+    /// is included in the next block regardless of fee, so MIN_TX_FEE suffices
+    /// and `median_fee` is `None`.
+    ///
+    /// When `utilization >= 1.0` the eligibility floor is derived from the
+    /// miner's formula: `eligible_after = (GUARANTEE_AFTER / fee).saturating_sub(1)`
+    /// Inverting for a desired wait gives: `fee ≥ ⌈GUARANTEE_AFTER / (target_blocks + 1)⌉`.
+    /// The recommendation is also raised to beat the first fee that would be
+    /// excluded from the next block, and `median_fee` reflects what peers are
+    /// actually paying right now.
+    pub fn fee_estimate(&self, target_blocks: u64) -> FeeEstimate {
+        let pending = self.entries.len();
+        let utilization = pending as f64 / MAX_BLOCK_TXS as f64;
+
+        let (recommended_fee, median_fee) = if pending == 0 {
+            (MIN_TX_FEE, None)
+        } else {
+            // Sort once; used for median and, when at capacity, for the cutoff.
+            let mut fees: Vec<u64> = self.entries.values().map(|e| e.tx.fee).collect();
+            fees.sort_unstable_by(|a, b| b.cmp(a));
+            let median = Some(fees[pending / 2]);
+
+            if utilization < 1.0 {
+                (MIN_TX_FEE, median)
+            } else {
+                // At or above capacity: eligibility formula applies.
+                // ceil(GUARANTEE_AFTER / (target_blocks + 1)), clamped to MIN_TX_FEE.
+                let eligibility_floor = GUARANTEE_AFTER
+                    .div_ceil(target_blocks.saturating_add(1))
+                    .max(MIN_TX_FEE);
+                // The first fee outside the top MAX_BLOCK_TXS would be excluded; beat it by 1.
+                let cutoff_fee = fees.get(MAX_BLOCK_TXS).copied().unwrap_or(0);
+                (eligibility_floor.max(cutoff_fee.saturating_add(1)), median)
+            }
+        };
+
+        FeeEstimate {
+            target_blocks,
+            utilization,
+            recommended_fee,
+            median_fee,
         }
     }
+
 }
 
 #[cfg(test)]
@@ -256,6 +289,17 @@ mod tests {
             public_key: [0u8; 32],
             signature: vec![sig],
         }
+    }
+
+    /// Returns a pool with exactly MAX_BLOCK_TXS entries (the boundary for busy mode).
+    /// Uses sig values 0..MAX_BLOCK_TXS-1 (as u8, wrapping), so callers can safely
+    /// use sig=255 for an additional entry without collision.
+    fn make_busy_pool() -> Mempool {
+        let mut pool = Mempool::new(None);
+        for i in 0..MAX_BLOCK_TXS as u8 {
+            pool.add_transaction(make_tx(i, &format!("s{i}"), 1, 50), 0);
+        }
+        pool
     }
 
     fn coinbase() -> Transaction {
@@ -457,47 +501,121 @@ mod tests {
         assert_eq!(all[0].1, 42);
     }
 
-    // ── fee_stats ─────────────────────────────────────────────────────────────
+    // ── fee_estimate ──────────────────────────────────────────────────────────
 
     #[test]
-    fn fee_stats_empty_pool_returns_zero_count_and_none_fields() {
+    fn fee_estimate_empty_pool_has_zero_utilization() {
         let pool = Mempool::new(None);
-        let s = pool.fee_stats();
-        assert_eq!(s.count, 0);
-        assert!(s.min.is_none());
-        assert!(s.max.is_none());
-        assert!(s.median.is_none());
-        assert!(s.p25.is_none());
-        assert!(s.p75.is_none());
+        let est = pool.fee_estimate(0);
+        assert_eq!(est.utilization, 0.0);
     }
 
     #[test]
-    fn fee_stats_single_tx_all_fields_equal_its_fee() {
+    fn fee_estimate_utilization_scales_with_mempool_size() {
         let mut pool = Mempool::new(None);
-        pool.add_transaction(make_tx(1, "alice", 100, 42), 0);
-        let s = pool.fee_stats();
-        assert_eq!(s.count, 1);
-        assert_eq!(s.min, Some(42));
-        assert_eq!(s.max, Some(42));
-        assert_eq!(s.median, Some(42));
-        assert_eq!(s.p25, Some(42));
-        assert_eq!(s.p75, Some(42));
+        // Half-full
+        for i in 0..(MAX_BLOCK_TXS / 2) as u8 {
+            pool.add_transaction(make_tx(i, &format!("s{i}"), 1, 10), 0);
+        }
+        let est = pool.fee_estimate(0);
+        assert!((est.utilization - 0.5).abs() < f64::EPSILON);
     }
 
     #[test]
-    fn fee_stats_correct_min_max_median() {
+    fn fee_estimate_empty_pool_has_no_median() {
+        let pool = Mempool::new(None);
+        assert!(pool.fee_estimate(0).median_fee.is_none());
+    }
+
+    #[test]
+    fn fee_estimate_idle_nonempty_pool_returns_min_fee_and_median() {
         let mut pool = Mempool::new(None);
-        pool.add_transaction(make_tx(1, "a", 0, 10), 0);
-        pool.add_transaction(make_tx(2, "b", 0, 1), 0);
-        pool.add_transaction(make_tx(3, "c", 0, 100), 0);
-        pool.add_transaction(make_tx(4, "d", 0, 20), 0);
-        pool.add_transaction(make_tx(5, "e", 0, 5), 0);
-        let s = pool.fee_stats();
-        assert_eq!(s.count, 5);
-        assert_eq!(s.min, Some(1));
-        assert_eq!(s.max, Some(100));
-        assert_eq!(s.median, Some(10));
-        assert_eq!(s.p25, Some(5));
-        assert_eq!(s.p75, Some(20));
+        pool.add_transaction(make_tx(1, "alice", 1, 30), 0);
+        pool.add_transaction(make_tx(2, "bob", 1, 10), 0);
+        pool.add_transaction(make_tx(3, "carol", 1, 20), 0);
+        let est = pool.fee_estimate(0);
+        assert!(est.utilization < 1.0);
+        assert_eq!(est.recommended_fee, MIN_TX_FEE);
+        // sorted descending: [30, 20, 10]; median index 1 → 20
+        assert_eq!(est.median_fee, Some(20));
+    }
+
+    #[test]
+    fn fee_estimate_at_capacity_has_utilization_one_and_median() {
+        // make_busy_pool fills to exactly MAX_BLOCK_TXS, all fee=50.
+        let pool = make_busy_pool();
+        let est = pool.fee_estimate(0);
+        assert_eq!(est.utilization, 1.0);
+        assert_eq!(est.median_fee, Some(50));
+    }
+
+    #[test]
+    fn fee_estimate_over_capacity_has_utilization_above_one() {
+        let mut pool = make_busy_pool();
+        pool.add_transaction(make_tx(255, "extra", 1, 1), 0);
+        let est = pool.fee_estimate(0);
+        assert!(est.utilization > 1.0);
+    }
+
+    #[test]
+    fn fee_estimate_full_recommended_uses_eligibility_floor_at_target_0() {
+        // With low competition (cutoff=1), eligibility floor (120) dominates.
+        let mut pool = make_busy_pool();
+        pool.add_transaction(make_tx(255, "extra", 1, 1), 0);
+        assert_eq!(pool.fee_estimate(0).recommended_fee, GUARANTEE_AFTER);
+    }
+
+    #[test]
+    fn fee_estimate_full_recommended_uses_eligibility_floor_at_target_1() {
+        // ceil(120 / 2) = 60; cutoff=1 so floor dominates.
+        let mut pool = make_busy_pool();
+        pool.add_transaction(make_tx(255, "extra", 1, 1), 0);
+        assert_eq!(pool.fee_estimate(1).recommended_fee, 60);
+    }
+
+    #[test]
+    fn fee_estimate_full_recommended_floors_at_min_tx_fee_for_large_target() {
+        // ceil(120/121)=1 → floor clamped to MIN_TX_FEE=2; cutoff=1 → beat=2.
+        let mut pool = make_busy_pool();
+        pool.add_transaction(make_tx(255, "extra", 1, 1), 0);
+        assert_eq!(pool.fee_estimate(GUARANTEE_AFTER).recommended_fee, MIN_TX_FEE);
+    }
+
+    #[test]
+    fn fee_estimate_full_raises_recommended_above_cutoff() {
+        let mut pool = Mempool::new(None);
+        for i in 0..MAX_BLOCK_TXS as u8 {
+            pool.add_transaction(make_tx(i, &format!("s{i}"), 1, 50), 0);
+        }
+        pool.add_transaction(make_tx(255, "extra", 1, 5), 0);
+
+        let est = pool.fee_estimate(0);
+        // Cutoff=5 → beat=6; eligibility floor=120 dominates.
+        assert_eq!(est.recommended_fee, GUARANTEE_AFTER);
+    }
+
+    #[test]
+    fn fee_estimate_full_recommended_beats_excluded_fee_when_competition_dominates() {
+        let mut pool = Mempool::new(None);
+        for i in 0..MAX_BLOCK_TXS as u8 {
+            pool.add_transaction(make_tx(i, &format!("s{i}"), 1, 500), 0);
+        }
+        pool.add_transaction(make_tx(255, "extra", 1, 200), 0);
+
+        let est = pool.fee_estimate(0);
+        // Cutoff=200 → beat=201; dominates eligibility floor=120.
+        assert_eq!(est.recommended_fee, 201);
+    }
+
+    #[test]
+    fn fee_estimate_full_median_reflects_middle_fee() {
+        let mut pool = Mempool::new(None);
+        // 240 txs with fee=100, 1 extra with fee=1 → total 241
+        // Sorted descending: [100 ×240, 1]; median index=120 → fee=100.
+        for i in 0..MAX_BLOCK_TXS as u8 {
+            pool.add_transaction(make_tx(i, &format!("s{i}"), 1, 100), 0);
+        }
+        pool.add_transaction(make_tx(255, "extra", 1, 1), 0);
+        assert_eq!(pool.fee_estimate(0).median_fee, Some(100));
     }
 }

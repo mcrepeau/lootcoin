@@ -18,9 +18,9 @@ let txOffset = 0;
 const TX_LIMIT = 10;
 let txHasMore = false;
 
-// Cached network stats from /chain/head and /mempool/fees
+// Cached network stats from /chain/head and /mempool/fee-estimate
 let networkStats = null;
-let feeStats = null;
+let feeEstimate = null;
 
 const byId = (id) => document.getElementById(id);
 function base() { return window.LOOTCOIN_NODE_URL.replace(/\/+$/, ""); }
@@ -58,7 +58,7 @@ function feeWaitBlocks(fee) {
 /** Simple time estimate for the confirm modal. */
 function settlementEstimate(fee) {
   if (fee <= 0) return "—";
-  const busy = networkStats && networkStats.mempool_size > 200;
+  const busy = feeEstimate && feeEstimate.utilization >= 1.0;
   const blocks = feeWaitBlocks(fee);
   if (!busy || blocks === 0) return "Next block";
   const blockSecs = (networkStats && networkStats.avg_block_time_secs) || 60;
@@ -78,12 +78,12 @@ function contributionTier(fee) {
 
 async function fetchNetworkStats() {
   try {
-    const [headRes, feesRes] = await Promise.all([
+    const [headRes, estimateRes] = await Promise.all([
       fetch(`${base()}/chain/head`),
-      fetch(`${base()}/mempool/fees`),
+      fetch(`${base()}/mempool/fee-estimate?target_blocks=0`),
     ]);
     if (headRes.ok) networkStats = await headRes.json();
-    if (feesRes.ok) feeStats = await feesRes.json();
+    if (estimateRes.ok) feeEstimate = await estimateRes.json();
     updateFeeHint();
   } catch {
     // network unavailable — keep stale stats
@@ -111,23 +111,23 @@ function updateFeeHint() {
     return;
   }
 
-  const busy = networkStats && networkStats.mempool_size > 200;
+  const busy = feeEstimate && feeEstimate.utilization >= 1.0;
   const tier = contributionTier(fee);
   const blocks = feeWaitBlocks(fee);
 
-  // Append median context when the network is busy and we have fee stats.
-  const medianNote = (busy && feeStats && feeStats.median != null)
-    ? ` Current median fee: ${fmt(feeStats.median)}.`
+  // Append market context when the network is busy.
+  const recommendNote = busy && feeEstimate
+    ? ` Median fee: ${fmt(feeEstimate.median_fee)}. Recommended for next block: ${fmt(feeEstimate.recommended_fee)}.`
     : "";
 
   if (!busy) {
     hint.textContent = "Network is below capacity — this transaction will be included in the next block.";
     hint.className = "fee-hint fee-hint-good";
   } else if (blocks === 0) {
-    hint.textContent = `Network is at capacity — ${tier} contribution, included in the next block.${medianNote}`;
+    hint.textContent = `Network is at capacity — ${tier} contribution, included in the next block.${recommendNote}`;
     hint.className = "fee-hint fee-hint-good";
   } else {
-    hint.textContent = `Network is at capacity — ${tier} contribution, included within ${blocks} block${blocks === 1 ? "" : "s"}.${medianNote}`;
+    hint.textContent = `Network is at capacity — ${tier} contribution, included within ${blocks} block${blocks === 1 ? "" : "s"}.${recommendNote}`;
     hint.className = blocks <= 10 ? "fee-hint fee-hint-good" : "fee-hint fee-hint-warn";
   }
 }

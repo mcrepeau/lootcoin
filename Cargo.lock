@@ -1019,7 +1019,7 @@ dependencies = [
 
 [[package]]
 name = "lootcoin-faucet"
-version = "3.2.0"
+version = "3.3.0"
 dependencies = [
  "axum",
  "hex",
@@ -1036,7 +1036,7 @@ dependencies = [
 
 [[package]]
 name = "lootcoin-miner"
-version = "3.2.0"
+version = "3.3.0"
 dependencies = [
  "anyhow",
  "cudarc",
@@ -1054,7 +1054,7 @@ dependencies = [
 
 [[package]]
 name = "lootcoin-node"
-version = "3.2.0"
+version = "3.3.0"
 dependencies = [
  "axum",
  "axum-client-ip",
@@ -1081,7 +1081,7 @@ dependencies = [
 
 [[package]]
 name = "lootcoin-wallet"
-version = "3.2.0"
+version = "3.3.0"
 dependencies = [
  "bip39",
  "clap",

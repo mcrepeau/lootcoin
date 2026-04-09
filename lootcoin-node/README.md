@@ -171,23 +171,6 @@ Paginated transaction history for an address. Lottery payouts appear as entries 
 
 All pending (unconfirmed) transactions.
 
-**GET /mempool/fees**
-
-Fee distribution across pending transactions.
-
-```json
-{
-  "count": 42,
-  "min": 1,
-  "max": 120,
-  "median": 12,
-  "p25": 5,
-  "p75": 60
-}
-```
-
-All fields except `count` are `null` when the mempool is empty. Useful for wallets to detect whether the network is idle (`count ≤ 200`, in which case any fee gets in immediately) and to show relevant context when it is busy.
-
 **GET /lottery/recent-payouts?tier=<tier>&limit=N**
 
 Most recent lottery payouts, newest first. Both parameters are optional.

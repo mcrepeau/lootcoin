@@ -28,7 +28,7 @@ use crate::blockchain::{BlockOutcome, Blockchain, CheckpointState};
 use crate::db::Db;
 use crate::gossip::{Gossip, NodeEvent};
 use crate::loot_ticket::LootTicket;
-use crate::mempool::{FeeStats, Mempool};
+use crate::mempool::{FeeEstimate, Mempool};
 use crate::metrics::Metrics;
 use lootcoin_core::block::MAX_BLOCK_TXS;
 use lootcoin_core::{block::Block, transaction::Transaction};
@@ -628,9 +628,20 @@ pub async fn get_recent_lottery_payouts_handler(
         })
 }
 
-pub async fn mempool_fees_handler(State(state): State<AppState>) -> Json<FeeStats> {
+#[derive(Deserialize)]
+pub struct FeeEstimateParams {
+    /// Number of blocks within which the transaction should be mined.
+    /// Defaults to 0 (include in the very next block).
+    target_blocks: Option<u64>,
+}
+
+pub async fn mempool_fee_estimate_handler(
+    State(state): State<AppState>,
+    Query(params): Query<FeeEstimateParams>,
+) -> Json<FeeEstimate> {
+    let target_blocks = params.target_blocks.unwrap_or(0);
     let pool = state.mempool.read().await;
-    Json(pool.fee_stats())
+    Json(pool.fee_estimate(target_blocks))
 }
 
 pub async fn get_blocks_handler(
@@ -1236,7 +1247,7 @@ pub fn router(state: AppState) -> Router {
             get(get_address_transactions_handler),
         )
         .route("/mempool", get(list_mempool_handler))
-        .route("/mempool/fees", get(mempool_fees_handler))
+        .route("/mempool/fee-estimate", get(mempool_fee_estimate_handler))
         .route(
             "/lottery/recent-payouts",
             get(get_recent_lottery_payouts_handler),
@@ -1517,41 +1528,38 @@ mod tests {
         assert_eq!(body[0]["added_height"], 1);
     }
 
-    // ── GET /mempool/fees ─────────────────────────────────────────────────────
+    // ── GET /mempool/fee-estimate ─────────────────────────────────────────────
 
     #[tokio::test]
-    async fn mempool_fees_empty_pool() {
+    async fn fee_estimate_empty_pool_returns_zero_utilization_and_min_fee() {
         let wallet = test_wallet();
-        let resp = get_req(make_state(&wallet), "/mempool/fees").await;
+        let resp = get_req(make_state(&wallet), "/mempool/fee-estimate?target_blocks=0").await;
         assert_eq!(resp.status(), StatusCode::OK);
         let body = json_body(resp).await;
-        assert_eq!(body["count"], 0);
-        assert!(body["min"].is_null());
-        assert!(body["max"].is_null());
+        assert_eq!(body["target_blocks"], 0);
+        assert_eq!(body["utilization"], 0.0);
+        assert_eq!(body["recommended_fee"], 2);
+        assert!(body["median_fee"].is_null());
     }
 
     #[tokio::test]
-    async fn mempool_fees_non_empty_pool() {
+    async fn fee_estimate_default_target_is_zero() {
         let wallet = test_wallet();
-        let state = make_state(&wallet);
-        for (i, fee) in [5u64, 10, 20].iter().enumerate() {
-            state.mempool.write().await.add_transaction(
-                Transaction {
-                    sender: format!("sender_{}", i),
-                    receiver: "b".to_string(),
-                    amount: 1,
-                    fee: *fee,
-                    nonce: 0,
-                    public_key: [0u8; 32],
-                    signature: vec![i as u8],
-                },
-                0,
-            );
-        }
-        let body = json_body(get_req(state, "/mempool/fees").await).await;
-        assert_eq!(body["count"], 3);
-        assert_eq!(body["min"], 5);
-        assert_eq!(body["max"], 20);
+        // No query param — should default to target_blocks=0
+        let body = json_body(get_req(make_state(&wallet), "/mempool/fee-estimate").await).await;
+        assert_eq!(body["target_blocks"], 0);
+    }
+
+    #[tokio::test]
+    async fn fee_estimate_under_capacity_any_target_returns_min_tx_fee() {
+        let wallet = test_wallet();
+        // Empty pool — target_blocks has no effect on the fee.
+        let body =
+            json_body(get_req(make_state(&wallet), "/mempool/fee-estimate?target_blocks=1").await)
+                .await;
+        assert!(body["utilization"].as_f64().unwrap() < 1.0);
+        assert_eq!(body["recommended_fee"], 2);
+        assert!(body["median_fee"].is_null());
     }
 
     // ── GET /blocks ───────────────────────────────────────────────────────────
