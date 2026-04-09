@@ -163,7 +163,6 @@ services:
 
 ## Further reading
 
-- [`ECONOMY.md`](ECONOMY.md) — simulated economics: pot dynamics, supply, inflation, fee flow, and gaming resistance (with charts)
 - [`lootcoin-node/README.md`](lootcoin-node/README.md) — node configuration, API reference, consensus details
 - [`lootcoin-miner/README.md`](lootcoin-miner/README.md) — miner configuration and transaction selection
 - [`lootcoin-faucet/README.md`](lootcoin-faucet/README.md) — faucet API and configuration
