@@ -215,7 +215,6 @@ impl Mempool {
         fees.sort_unstable_by(|a, b| b.cmp(a));
         Some(fees[pending / 2])
     }
-
 }
 
 #[cfg(test)]
