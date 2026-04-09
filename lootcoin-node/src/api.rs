@@ -28,7 +28,7 @@ use crate::blockchain::{BlockOutcome, Blockchain, CheckpointState};
 use crate::db::Db;
 use crate::gossip::{Gossip, NodeEvent};
 use crate::loot_ticket::LootTicket;
-use crate::mempool::{FeeEstimate, Mempool};
+use crate::mempool::Mempool;
 use crate::metrics::Metrics;
 use lootcoin_core::block::MAX_BLOCK_TXS;
 use lootcoin_core::{block::Block, transaction::Transaction};
@@ -166,6 +166,8 @@ pub struct ChainHeadResponse {
     pub latest_hash_hex: String,
     pub difficulty: f64,
     pub mempool_size: usize,
+    /// Median fee of all pending transactions. `null` when the pool is empty.
+    pub mempool_median_fee: Option<u64>,
     pub avg_block_time_secs: Option<f64>,
     /// Hex-encoded u128: cumulative sum of 2^difficulty across all main-chain
     /// blocks. Used by peers to select the best chain without trusting height.
@@ -628,22 +630,6 @@ pub async fn get_recent_lottery_payouts_handler(
         })
 }
 
-#[derive(Deserialize)]
-pub struct FeeEstimateParams {
-    /// Number of blocks within which the transaction should be mined.
-    /// Defaults to 0 (include in the very next block).
-    target_blocks: Option<u64>,
-}
-
-pub async fn mempool_fee_estimate_handler(
-    State(state): State<AppState>,
-    Query(params): Query<FeeEstimateParams>,
-) -> Json<FeeEstimate> {
-    let target_blocks = params.target_blocks.unwrap_or(0);
-    let pool = state.mempool.read().await;
-    Json(pool.fee_estimate(target_blocks))
-}
-
 pub async fn get_blocks_handler(
     State(state): State<AppState>,
     Query(query): Query<BlockRangeQuery>,
@@ -690,7 +676,6 @@ pub async fn get_blocks_handler(
     Json(views)
 }
 
-// New: expose chain head for miners
 pub async fn chain_head_handler(State(state): State<AppState>) -> Json<ChainHeadResponse> {
     let (height, latest_hash_hex, difficulty, avg_block_time_secs, chain_work_hex, pot) = {
         let chain = state.chain.read().await;
@@ -702,12 +687,16 @@ pub async fn chain_head_handler(State(state): State<AppState>) -> Json<ChainHead
         let pot = chain.get_pot();
         (h, hash_hex, diff, avg, work, pot)
     };
-    let mempool_size = state.mempool.read().await.len();
+    let (mempool_size, mempool_median_fee) = {
+        let pool = state.mempool.read().await;
+        (pool.len(), pool.median_fee())
+    };
     Json(ChainHeadResponse {
         height,
         latest_hash_hex,
         difficulty,
         mempool_size,
+        mempool_median_fee,
         avg_block_time_secs,
         chain_work_hex,
         pot,
@@ -1247,7 +1236,6 @@ pub fn router(state: AppState) -> Router {
             get(get_address_transactions_handler),
         )
         .route("/mempool", get(list_mempool_handler))
-        .route("/mempool/fee-estimate", get(mempool_fee_estimate_handler))
         .route(
             "/lottery/recent-payouts",
             get(get_recent_lottery_payouts_handler),
@@ -1492,6 +1480,7 @@ mod tests {
         let body = json_body(resp).await;
         assert_eq!(body["height"], 1); // genesis counts as block 0, height=1
         assert_eq!(body["mempool_size"], 0);
+        assert!(body["mempool_median_fee"].is_null());
         assert!(body["difficulty"].is_number());
         assert!(body["chain_work_hex"].is_string());
         assert!(body["pot"].is_number());
@@ -1526,40 +1515,6 @@ mod tests {
         assert_eq!(body.as_array().unwrap().len(), 1);
         assert_eq!(body[0]["transaction"]["amount"], 100);
         assert_eq!(body[0]["added_height"], 1);
-    }
-
-    // ── GET /mempool/fee-estimate ─────────────────────────────────────────────
-
-    #[tokio::test]
-    async fn fee_estimate_empty_pool_returns_zero_utilization_and_min_fee() {
-        let wallet = test_wallet();
-        let resp = get_req(make_state(&wallet), "/mempool/fee-estimate?target_blocks=0").await;
-        assert_eq!(resp.status(), StatusCode::OK);
-        let body = json_body(resp).await;
-        assert_eq!(body["target_blocks"], 0);
-        assert_eq!(body["utilization"], 0.0);
-        assert_eq!(body["recommended_fee"], 2);
-        assert!(body["median_fee"].is_null());
-    }
-
-    #[tokio::test]
-    async fn fee_estimate_default_target_is_zero() {
-        let wallet = test_wallet();
-        // No query param — should default to target_blocks=0
-        let body = json_body(get_req(make_state(&wallet), "/mempool/fee-estimate").await).await;
-        assert_eq!(body["target_blocks"], 0);
-    }
-
-    #[tokio::test]
-    async fn fee_estimate_under_capacity_any_target_returns_min_tx_fee() {
-        let wallet = test_wallet();
-        // Empty pool — target_blocks has no effect on the fee.
-        let body =
-            json_body(get_req(make_state(&wallet), "/mempool/fee-estimate?target_blocks=1").await)
-                .await;
-        assert!(body["utilization"].as_f64().unwrap() < 1.0);
-        assert_eq!(body["recommended_fee"], 2);
-        assert!(body["median_fee"].is_null());
     }
 
     // ── GET /blocks ───────────────────────────────────────────────────────────

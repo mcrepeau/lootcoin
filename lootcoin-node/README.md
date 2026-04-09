@@ -142,11 +142,14 @@ Current chain state.
   "difficulty": 18.47,
   "latest_hash_hex": "0000a3f1...",
   "mempool_size": 3,
+  "mempool_median_fee": 12,
   "avg_block_time_secs": 61.4,
   "chain_work_hex": "00000000000000000000000000057a3c",
   "pot": 99901234
 }
 ```
+
+`mempool_median_fee` is the median fee of all pending transactions. `null` when the pool is empty.
 
 **GET /blocks?from=N&limit=N**
 
@@ -170,25 +173,6 @@ Paginated transaction history for an address. Lottery payouts appear as entries 
 **GET /mempool**
 
 All pending (unconfirmed) transactions.
-
-**GET /mempool/fee-estimate?target_blocks=N**
-
-Fee recommendation for getting a transaction mined within `target_blocks` blocks. `target_blocks` defaults to `0` (include in the very next block).
-
-```json
-{
-  "target_blocks": 0,
-  "utilization": 1.3,
-  "recommended_fee": 145,
-  "median_fee": 87
-}
-```
-
-`utilization` is `pending_count / MAX_BLOCK_TXS`. Below `1.0` the network has spare capacity and any fee ≥ the minimum (`2`) gets included in the next block. At or above `1.0` the block is full and fee-tier eligibility gates inclusion.
-
-`recommended_fee` is `MIN_TX_FEE` (`2`) when `utilization < 1.0`. When at or above capacity it is `max(⌈120 / (target_blocks + 1)⌉, cutoff_fee + 1)`, where `cutoff_fee` is the lowest fee among the top 240 pending transactions.
-
-`median_fee` is the median fee across all pending transactions. `null` when the pool is empty.
 
 **GET /lottery/recent-payouts?tier=<tier>&limit=N**
 

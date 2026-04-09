@@ -18,9 +18,8 @@ let txOffset = 0;
 const TX_LIMIT = 10;
 let txHasMore = false;
 
-// Cached network stats from /chain/head and /mempool/fee-estimate
+// Cached network stats from /chain/head
 let networkStats = null;
-let feeEstimate = null;
 
 const byId = (id) => document.getElementById(id);
 function base() { return window.LOOTCOIN_NODE_URL.replace(/\/+$/, ""); }
@@ -49,6 +48,7 @@ function fmt(n) {
 
 /** Mirrors the miner's is_eligible formula: eligible_after = 120 / fee blocks. */
 const GUARANTEE_AFTER = 120;
+const MAX_BLOCK_TXS = 240;
 
 function feeWaitBlocks(fee) {
   if (fee <= 0) return Infinity;
@@ -58,7 +58,7 @@ function feeWaitBlocks(fee) {
 /** Simple time estimate for the confirm modal. */
 function settlementEstimate(fee) {
   if (fee <= 0) return "—";
-  const busy = feeEstimate && feeEstimate.utilization >= 1.0;
+  const busy = networkStats && networkStats.mempool_size >= MAX_BLOCK_TXS;
   const blocks = feeWaitBlocks(fee);
   if (!busy || blocks === 0) return "Next block";
   const blockSecs = (networkStats && networkStats.avg_block_time_secs) || 60;
@@ -78,12 +78,8 @@ function contributionTier(fee) {
 
 async function fetchNetworkStats() {
   try {
-    const [headRes, estimateRes] = await Promise.all([
-      fetch(`${base()}/chain/head`),
-      fetch(`${base()}/mempool/fee-estimate?target_blocks=0`),
-    ]);
-    if (headRes.ok) networkStats = await headRes.json();
-    if (estimateRes.ok) feeEstimate = await estimateRes.json();
+    const res = await fetch(`${base()}/chain/head`);
+    if (res.ok) networkStats = await res.json();
     updateFeeHint();
   } catch {
     // network unavailable — keep stale stats
@@ -111,13 +107,13 @@ function updateFeeHint() {
     return;
   }
 
-  const busy = feeEstimate && feeEstimate.utilization >= 1.0;
+  const busy = networkStats && networkStats.mempool_size >= MAX_BLOCK_TXS;
   const tier = contributionTier(fee);
   const blocks = feeWaitBlocks(fee);
 
   // Append market context when the network is busy.
-  const recommendNote = busy && feeEstimate
-    ? ` Median fee: ${fmt(feeEstimate.median_fee)}. Recommended for next block: ${fmt(feeEstimate.recommended_fee)}.`
+  const recommendNote = busy && networkStats.mempool_median_fee != null
+    ? ` Median fee: ${fmt(networkStats.mempool_median_fee)}.`
     : "";
 
   if (!busy) {
