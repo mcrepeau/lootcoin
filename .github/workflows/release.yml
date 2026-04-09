@@ -166,6 +166,50 @@ jobs:
             dist/lc-*
             dist/checksums.txt
 
+  # Builds the WASM wallet, assembles static assets, and deploys to Cloudflare Pages.
+  # Runs in parallel with build-cli and publish-docker.
+  publish-pages:
+    name: Publish Cloudflare Pages
+    needs: version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: wasm32-unknown-unknown
+
+      - name: Install wasm-pack and wasm-opt
+        run: |
+          curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
+          sudo apt-get install -y --no-install-recommends binaryen
+
+      - name: Build WASM
+        run: wasm-pack build lootcoin-wallet --target web --release
+
+      - name: Optimise WASM
+        run: |
+          wasm-opt -Oz \
+            -o lootcoin-wallet/pkg/lootcoin_wallet_bg.wasm \
+               lootcoin-wallet/pkg/lootcoin_wallet_bg.wasm
+
+      - name: Assemble dist
+        run: |
+          mkdir -p dist/lootcoin-wallet
+          cp lootcoin-web/*.html lootcoin-web/*.css lootcoin-web/*.js lootcoin-web/favicon.ico dist/
+          cp -r lootcoin-wallet/pkg dist/lootcoin-wallet/
+
+      - name: Deploy to Cloudflare Pages
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          command: pages deploy dist --project-name=lootcoin-web --branch=main
+
   # Builds and pushes all Docker images. Runs in parallel with build-cli.
   publish-docker:
     name: Publish Docker — ${{ matrix.service }}
