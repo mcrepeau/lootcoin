@@ -49,6 +49,8 @@ services:
     build:
       context: .
       dockerfile: lootcoin-web/Dockerfile
+    volumes:
+      - ./dev.config.js:/usr/share/nginx/html/config.js:ro
     ports:
       - "8888:80"
 
