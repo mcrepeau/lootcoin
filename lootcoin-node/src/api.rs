@@ -28,7 +28,7 @@ use crate::blockchain::{BlockOutcome, Blockchain, CheckpointState};
 use crate::db::Db;
 use crate::gossip::{Gossip, NodeEvent};
 use crate::loot_ticket::LootTicket;
-use crate::mempool::{FeeStats, Mempool};
+use crate::mempool::Mempool;
 use crate::metrics::Metrics;
 use lootcoin_core::block::MAX_BLOCK_TXS;
 use lootcoin_core::{block::Block, transaction::Transaction};
@@ -166,6 +166,8 @@ pub struct ChainHeadResponse {
     pub latest_hash_hex: String,
     pub difficulty: f64,
     pub mempool_size: usize,
+    /// Median fee of all pending transactions. `null` when the pool is empty.
+    pub mempool_median_fee: Option<u64>,
     pub avg_block_time_secs: Option<f64>,
     /// Hex-encoded u128: cumulative sum of 2^difficulty across all main-chain
     /// blocks. Used by peers to select the best chain without trusting height.
@@ -628,11 +630,6 @@ pub async fn get_recent_lottery_payouts_handler(
         })
 }
 
-pub async fn mempool_fees_handler(State(state): State<AppState>) -> Json<FeeStats> {
-    let pool = state.mempool.read().await;
-    Json(pool.fee_stats())
-}
-
 pub async fn get_blocks_handler(
     State(state): State<AppState>,
     Query(query): Query<BlockRangeQuery>,
@@ -679,7 +676,6 @@ pub async fn get_blocks_handler(
     Json(views)
 }
 
-// New: expose chain head for miners
 pub async fn chain_head_handler(State(state): State<AppState>) -> Json<ChainHeadResponse> {
     let (height, latest_hash_hex, difficulty, avg_block_time_secs, chain_work_hex, pot) = {
         let chain = state.chain.read().await;
@@ -691,12 +687,16 @@ pub async fn chain_head_handler(State(state): State<AppState>) -> Json<ChainHead
         let pot = chain.get_pot();
         (h, hash_hex, diff, avg, work, pot)
     };
-    let mempool_size = state.mempool.read().await.len();
+    let (mempool_size, mempool_median_fee) = {
+        let pool = state.mempool.read().await;
+        (pool.len(), pool.median_fee())
+    };
     Json(ChainHeadResponse {
         height,
         latest_hash_hex,
         difficulty,
         mempool_size,
+        mempool_median_fee,
         avg_block_time_secs,
         chain_work_hex,
         pot,
@@ -1236,7 +1236,6 @@ pub fn router(state: AppState) -> Router {
             get(get_address_transactions_handler),
         )
         .route("/mempool", get(list_mempool_handler))
-        .route("/mempool/fees", get(mempool_fees_handler))
         .route(
             "/lottery/recent-payouts",
             get(get_recent_lottery_payouts_handler),
@@ -1481,6 +1480,7 @@ mod tests {
         let body = json_body(resp).await;
         assert_eq!(body["height"], 1); // genesis counts as block 0, height=1
         assert_eq!(body["mempool_size"], 0);
+        assert!(body["mempool_median_fee"].is_null());
         assert!(body["difficulty"].is_number());
         assert!(body["chain_work_hex"].is_string());
         assert!(body["pot"].is_number());
@@ -1515,43 +1515,6 @@ mod tests {
         assert_eq!(body.as_array().unwrap().len(), 1);
         assert_eq!(body[0]["transaction"]["amount"], 100);
         assert_eq!(body[0]["added_height"], 1);
-    }
-
-    // ── GET /mempool/fees ─────────────────────────────────────────────────────
-
-    #[tokio::test]
-    async fn mempool_fees_empty_pool() {
-        let wallet = test_wallet();
-        let resp = get_req(make_state(&wallet), "/mempool/fees").await;
-        assert_eq!(resp.status(), StatusCode::OK);
-        let body = json_body(resp).await;
-        assert_eq!(body["count"], 0);
-        assert!(body["min"].is_null());
-        assert!(body["max"].is_null());
-    }
-
-    #[tokio::test]
-    async fn mempool_fees_non_empty_pool() {
-        let wallet = test_wallet();
-        let state = make_state(&wallet);
-        for (i, fee) in [5u64, 10, 20].iter().enumerate() {
-            state.mempool.write().await.add_transaction(
-                Transaction {
-                    sender: format!("sender_{}", i),
-                    receiver: "b".to_string(),
-                    amount: 1,
-                    fee: *fee,
-                    nonce: 0,
-                    public_key: [0u8; 32],
-                    signature: vec![i as u8],
-                },
-                0,
-            );
-        }
-        let body = json_body(get_req(state, "/mempool/fees").await).await;
-        assert_eq!(body["count"], 3);
-        assert_eq!(body["min"], 5);
-        assert_eq!(body["max"], 20);
     }
 
     // ── GET /blocks ───────────────────────────────────────────────────────────

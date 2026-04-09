@@ -142,11 +142,14 @@ Current chain state.
   "difficulty": 18.47,
   "latest_hash_hex": "0000a3f1...",
   "mempool_size": 3,
+  "mempool_median_fee": 12,
   "avg_block_time_secs": 61.4,
   "chain_work_hex": "00000000000000000000000000057a3c",
   "pot": 99901234
 }
 ```
+
+`mempool_median_fee` is the median fee of all pending transactions. `null` when the pool is empty.
 
 **GET /blocks?from=N&limit=N**
 
@@ -170,23 +173,6 @@ Paginated transaction history for an address. Lottery payouts appear as entries 
 **GET /mempool**
 
 All pending (unconfirmed) transactions.
-
-**GET /mempool/fees**
-
-Fee distribution across pending transactions.
-
-```json
-{
-  "count": 42,
-  "min": 1,
-  "max": 120,
-  "median": 12,
-  "p25": 5,
-  "p75": 60
-}
-```
-
-All fields except `count` are `null` when the mempool is empty. Useful for wallets to detect whether the network is idle (`count ≤ 200`, in which case any fee gets in immediately) and to show relevant context when it is busy.
 
 **GET /lottery/recent-payouts?tier=<tier>&limit=N**
 

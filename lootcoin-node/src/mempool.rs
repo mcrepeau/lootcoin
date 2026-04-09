@@ -1,18 +1,7 @@
 use crate::db::Db;
 use lootcoin_core::transaction::Transaction;
-use serde::Serialize;
 use std::collections::HashMap;
 use std::sync::Arc;
-
-#[derive(Serialize)]
-pub struct FeeStats {
-    pub count: usize,
-    pub min: Option<u64>,
-    pub max: Option<u64>,
-    pub median: Option<u64>,
-    pub p25: Option<u64>,
-    pub p75: Option<u64>,
-}
 
 pub const MAX_MEMPOOL_SIZE: usize = 10_000;
 /// Transactions added more than this many blocks ago are evicted.
@@ -215,36 +204,23 @@ impl Mempool {
         }
     }
 
-    /// Returns fee distribution statistics across all pending transactions.
-    pub fn fee_stats(&self) -> FeeStats {
+    /// Median fee of all pending transactions.
+    /// `None` only when the pool is empty.
+    pub fn median_fee(&self) -> Option<u64> {
+        let pending = self.entries.len();
+        if pending == 0 {
+            return None;
+        }
         let mut fees: Vec<u64> = self.entries.values().map(|e| e.tx.fee).collect();
-        let count = fees.len();
-        if count == 0 {
-            return FeeStats {
-                count: 0,
-                min: None,
-                max: None,
-                median: None,
-                p25: None,
-                p75: None,
-            };
-        }
-        fees.sort_unstable();
-        FeeStats {
-            count,
-            min: Some(fees[0]),
-            max: Some(fees[count - 1]),
-            median: Some(fees[count / 2]),
-            p25: Some(fees[count / 4]),
-            p75: Some(fees[count * 3 / 4]),
-        }
+        fees.sort_unstable_by(|a, b| b.cmp(a));
+        Some(fees[pending / 2])
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use lootcoin_core::transaction::Transaction;
+    use lootcoin_core::{block::MAX_BLOCK_TXS, transaction::Transaction};
 
     fn make_tx(sig: u8, sender: &str, amount: u64, fee: u64) -> Transaction {
         Transaction {
@@ -256,6 +232,17 @@ mod tests {
             public_key: [0u8; 32],
             signature: vec![sig],
         }
+    }
+
+    /// Returns a pool with exactly MAX_BLOCK_TXS entries (the boundary for busy mode).
+    /// Uses sig values 0..MAX_BLOCK_TXS-1 (as u8, wrapping), so callers can safely
+    /// use sig=255 for an additional entry without collision.
+    fn make_busy_pool() -> Mempool {
+        let mut pool = Mempool::new(None);
+        for i in 0..MAX_BLOCK_TXS as u8 {
+            pool.add_transaction(make_tx(i, &format!("s{i}"), 1, 50), 0);
+        }
+        pool
     }
 
     fn coinbase() -> Transaction {
@@ -457,47 +444,39 @@ mod tests {
         assert_eq!(all[0].1, 42);
     }
 
-    // ── fee_stats ─────────────────────────────────────────────────────────────
+    // ── median_fee ────────────────────────────────────────────────────────────
 
     #[test]
-    fn fee_stats_empty_pool_returns_zero_count_and_none_fields() {
+    fn median_fee_empty_pool_is_none() {
         let pool = Mempool::new(None);
-        let s = pool.fee_stats();
-        assert_eq!(s.count, 0);
-        assert!(s.min.is_none());
-        assert!(s.max.is_none());
-        assert!(s.median.is_none());
-        assert!(s.p25.is_none());
-        assert!(s.p75.is_none());
+        assert!(pool.median_fee().is_none());
     }
 
     #[test]
-    fn fee_stats_single_tx_all_fields_equal_its_fee() {
+    fn median_fee_odd_count_picks_middle() {
         let mut pool = Mempool::new(None);
-        pool.add_transaction(make_tx(1, "alice", 100, 42), 0);
-        let s = pool.fee_stats();
-        assert_eq!(s.count, 1);
-        assert_eq!(s.min, Some(42));
-        assert_eq!(s.max, Some(42));
-        assert_eq!(s.median, Some(42));
-        assert_eq!(s.p25, Some(42));
-        assert_eq!(s.p75, Some(42));
+        pool.add_transaction(make_tx(1, "alice", 1, 30), 0);
+        pool.add_transaction(make_tx(2, "bob", 1, 10), 0);
+        pool.add_transaction(make_tx(3, "carol", 1, 20), 0);
+        // sorted descending: [30, 20, 10]; median index 1 → 20
+        assert_eq!(pool.median_fee(), Some(20));
     }
 
     #[test]
-    fn fee_stats_correct_min_max_median() {
+    fn median_fee_at_capacity_all_same_fee() {
+        let pool = make_busy_pool();
+        assert_eq!(pool.median_fee(), Some(50));
+    }
+
+    #[test]
+    fn median_fee_reflects_middle_of_mixed_fees() {
         let mut pool = Mempool::new(None);
-        pool.add_transaction(make_tx(1, "a", 0, 10), 0);
-        pool.add_transaction(make_tx(2, "b", 0, 1), 0);
-        pool.add_transaction(make_tx(3, "c", 0, 100), 0);
-        pool.add_transaction(make_tx(4, "d", 0, 20), 0);
-        pool.add_transaction(make_tx(5, "e", 0, 5), 0);
-        let s = pool.fee_stats();
-        assert_eq!(s.count, 5);
-        assert_eq!(s.min, Some(1));
-        assert_eq!(s.max, Some(100));
-        assert_eq!(s.median, Some(10));
-        assert_eq!(s.p25, Some(5));
-        assert_eq!(s.p75, Some(20));
+        // 240 txs with fee=100, 1 extra with fee=1 → total 241
+        // Sorted descending: [100 ×240, 1]; median index=120 → fee=100.
+        for i in 0..MAX_BLOCK_TXS as u8 {
+            pool.add_transaction(make_tx(i, &format!("s{i}"), 1, 100), 0);
+        }
+        pool.add_transaction(make_tx(255, "extra", 1, 1), 0);
+        assert_eq!(pool.median_fee(), Some(100));
     }
 }

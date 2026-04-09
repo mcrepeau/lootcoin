@@ -18,9 +18,8 @@ let txOffset = 0;
 const TX_LIMIT = 10;
 let txHasMore = false;
 
-// Cached network stats from /chain/head and /mempool/fees
+// Cached network stats from /chain/head
 let networkStats = null;
-let feeStats = null;
 
 const byId = (id) => document.getElementById(id);
 function base() { return window.LOOTCOIN_NODE_URL.replace(/\/+$/, ""); }
@@ -49,6 +48,7 @@ function fmt(n) {
 
 /** Mirrors the miner's is_eligible formula: eligible_after = 120 / fee blocks. */
 const GUARANTEE_AFTER = 120;
+const MAX_BLOCK_TXS = 240;
 
 function feeWaitBlocks(fee) {
   if (fee <= 0) return Infinity;
@@ -58,7 +58,7 @@ function feeWaitBlocks(fee) {
 /** Simple time estimate for the confirm modal. */
 function settlementEstimate(fee) {
   if (fee <= 0) return "—";
-  const busy = networkStats && networkStats.mempool_size > 200;
+  const busy = networkStats && networkStats.mempool_size >= MAX_BLOCK_TXS;
   const blocks = feeWaitBlocks(fee);
   if (!busy || blocks === 0) return "Next block";
   const blockSecs = (networkStats && networkStats.avg_block_time_secs) || 60;
@@ -78,12 +78,8 @@ function contributionTier(fee) {
 
 async function fetchNetworkStats() {
   try {
-    const [headRes, feesRes] = await Promise.all([
-      fetch(`${base()}/chain/head`),
-      fetch(`${base()}/mempool/fees`),
-    ]);
-    if (headRes.ok) networkStats = await headRes.json();
-    if (feesRes.ok) feeStats = await feesRes.json();
+    const res = await fetch(`${base()}/chain/head`);
+    if (res.ok) networkStats = await res.json();
     updateFeeHint();
   } catch {
     // network unavailable — keep stale stats
@@ -111,23 +107,23 @@ function updateFeeHint() {
     return;
   }
 
-  const busy = networkStats && networkStats.mempool_size > 200;
+  const busy = networkStats && networkStats.mempool_size >= MAX_BLOCK_TXS;
   const tier = contributionTier(fee);
   const blocks = feeWaitBlocks(fee);
 
-  // Append median context when the network is busy and we have fee stats.
-  const medianNote = (busy && feeStats && feeStats.median != null)
-    ? ` Current median fee: ${fmt(feeStats.median)}.`
+  // Append market context when the network is busy.
+  const recommendNote = busy && networkStats.mempool_median_fee != null
+    ? ` Median fee: ${fmt(networkStats.mempool_median_fee)}.`
     : "";
 
   if (!busy) {
     hint.textContent = "Network is below capacity — this transaction will be included in the next block.";
     hint.className = "fee-hint fee-hint-good";
   } else if (blocks === 0) {
-    hint.textContent = `Network is at capacity — ${tier} contribution, included in the next block.${medianNote}`;
+    hint.textContent = `Network is at capacity — ${tier} contribution, included in the next block.${recommendNote}`;
     hint.className = "fee-hint fee-hint-good";
   } else {
-    hint.textContent = `Network is at capacity — ${tier} contribution, included within ${blocks} block${blocks === 1 ? "" : "s"}.${medianNote}`;
+    hint.textContent = `Network is at capacity — ${tier} contribution, included within ${blocks} block${blocks === 1 ? "" : "s"}.${recommendNote}`;
     hint.className = blocks <= 10 ? "fee-hint fee-hint-good" : "fee-hint fee-hint-warn";
   }
 }
