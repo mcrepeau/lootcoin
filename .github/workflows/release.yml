@@ -3,14 +3,53 @@ name: Release
 on:
   push:
     tags:
-      - 'v*'
+      - 'v*.*.*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to release (e.g. 1.3.2, without leading v)'
+        required: true
 
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  build:
-    name: ${{ matrix.target }}
+  # Resolves the version tag from either the pushed tag or the manual input,
+  # and creates the git tag when triggered via workflow_dispatch.
+  version:
+    name: Resolve version
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      tag: ${{ steps.resolve.outputs.tag }}
+      version: ${{ steps.resolve.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve version
+        id: resolve
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            TAG="v${{ github.event.inputs.version }}"
+          else
+            TAG="${{ github.ref_name }}"
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Create git tag
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag "${{ steps.resolve.outputs.tag }}"
+          git push origin "${{ steps.resolve.outputs.tag }}"
+
+  # Builds the lc CLI binary for all target platforms.
+  build-cli:
+    name: Build CLI — ${{ matrix.target }}
+    needs: version
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -45,29 +84,58 @@ jobs:
         if: runner.os != 'Windows'
         run: strip target/${{ matrix.target }}/release/lc
 
+      - name: Generate completions and man page (Unix)
+        if: runner.os != 'Windows'
+        run: |
+          BIN=target/${{ matrix.target }}/release/lc
+          mkdir -p extras/completions extras/man
+          "$BIN" completions bash > extras/completions/lc.bash
+          "$BIN" completions zsh  > extras/completions/lc.zsh
+          "$BIN" completions fish > extras/completions/lc.fish
+          "$BIN" man              > extras/man/lc.1
+
+      - name: Generate completions and man page (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $BIN = "target\${{ matrix.target }}\release\lc.exe"
+          New-Item -ItemType Directory -Force extras/completions, extras/man | Out-Null
+          & $BIN completions bash       | Set-Content -Encoding utf8NoBOM extras/completions/lc.bash
+          & $BIN completions zsh        | Set-Content -Encoding utf8NoBOM extras/completions/lc.zsh
+          & $BIN completions fish       | Set-Content -Encoding utf8NoBOM extras/completions/lc.fish
+          & $BIN completions powershell | Set-Content -Encoding utf8NoBOM extras/completions/lc.ps1
+          & $BIN man                    | Set-Content -Encoding utf8NoBOM extras/man/lc.1
+
       - name: Package (Unix)
         if: runner.os != 'Windows'
         run: |
-          cd target/${{ matrix.target }}/release
-          tar czf "$GITHUB_WORKSPACE/lc-${{ github.ref_name }}-${{ matrix.target }}.tar.gz" lc
-          echo "ASSET=lc-${{ github.ref_name }}-${{ matrix.target }}.tar.gz" >> "$GITHUB_ENV"
+          STAGING="lc-${{ needs.version.outputs.tag }}-${{ matrix.target }}"
+          mkdir "$STAGING"
+          cp target/${{ matrix.target }}/release/lc "$STAGING/"
+          cp -r extras/completions extras/man "$STAGING/"
+          tar czf "${STAGING}.tar.gz" "$STAGING"
+          echo "ASSET=${STAGING}.tar.gz" >> "$GITHUB_ENV"
 
       - name: Package (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          cd target/${{ matrix.target }}/release
-          Compress-Archive lc.exe "$env:GITHUB_WORKSPACE\lc-${{ github.ref_name }}-${{ matrix.target }}.zip"
-          "ASSET=lc-${{ github.ref_name }}-${{ matrix.target }}.zip" | Out-File -FilePath $env:GITHUB_ENV -Append
+          $STAGING = "lc-${{ needs.version.outputs.tag }}-${{ matrix.target }}"
+          New-Item -ItemType Directory $STAGING | Out-Null
+          Copy-Item "target\${{ matrix.target }}\release\lc.exe" "$STAGING\"
+          Copy-Item -Recurse extras/completions, extras/man "$STAGING\"
+          Compress-Archive "$STAGING" "${STAGING}.zip"
+          "ASSET=${STAGING}.zip" | Out-File -FilePath $env:GITHUB_ENV -Append
 
       - uses: actions/upload-artifact@v4
         with:
           name: lc-${{ matrix.target }}
           path: ${{ env.ASSET }}
 
-  release:
-    name: Publish release
-    needs: build
+  # Creates the GitHub release with all CLI binaries and a checksum file.
+  publish-github-release:
+    name: Publish GitHub release
+    needs: [version, build-cli]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -91,8 +159,101 @@ jobs:
       - name: Create draft release
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ needs.version.outputs.tag }}
           draft: true
           generate_release_notes: true
           files: |
             dist/lc-*
             dist/checksums.txt
+
+  # Builds the WASM wallet, assembles static assets, and deploys to Cloudflare Pages.
+  # Runs in parallel with build-cli and publish-docker.
+  publish-pages:
+    name: Publish Cloudflare Pages
+    needs: version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: wasm32-unknown-unknown
+
+      - name: Install wasm-pack and wasm-opt
+        run: |
+          curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
+          sudo apt-get install -y --no-install-recommends binaryen
+
+      - name: Build WASM
+        run: wasm-pack build lootcoin-wallet --target web --release
+
+      - name: Optimise WASM
+        run: |
+          wasm-opt -Oz \
+            -o lootcoin-wallet/pkg/lootcoin_wallet_bg.wasm \
+               lootcoin-wallet/pkg/lootcoin_wallet_bg.wasm
+
+      - name: Assemble dist
+        run: |
+          mkdir -p dist/lootcoin-wallet
+          cp lootcoin-web/*.html lootcoin-web/*.css lootcoin-web/*.js lootcoin-web/favicon.ico dist/
+          cp -r lootcoin-wallet/pkg dist/lootcoin-wallet/
+
+      - name: Deploy to Cloudflare Pages
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          command: pages deploy dist --project-name=lootcoin-web --branch=main
+
+  # Builds and pushes all Docker images. Runs in parallel with build-cli.
+  publish-docker:
+    name: Publish Docker — ${{ matrix.service }}
+    needs: version
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - service: lootcoin-node
+            image: mcrepeau79/lootcoin-node
+          - service: lootcoin-miner
+            image: mcrepeau79/lootcoin-miner
+          - service: lootcoin-faucet
+            image: mcrepeau79/lootcoin-faucet
+          - service: lootcoin-web
+            image: mcrepeau79/lootcoin-web
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build and push ${{ matrix.service }}
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ${{ matrix.service }}/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: |
+            ${{ matrix.image }}:${{ needs.version.outputs.version }}
+            ${{ matrix.image }}:latest
+          cache-from: type=gha,scope=${{ matrix.service }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.service }}

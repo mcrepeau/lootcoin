@@ -1,8 +1,6 @@
 # lootcoin-node
 
-A proof-of-work blockchain where transaction fees don't go to miners — they accumulate in a **lottery pot** that pays out randomly to past miners.
-
----
+The node is at the heart of the Lootcoin network. It receives transactions from the wallet, blocks from miners, and synchronizes with other nodes. It implement the logic that governs the chain.
 
 ## Features
 
@@ -108,7 +106,7 @@ When `Transaction::new_signed` is called, a cryptographically random 64-bit nonc
 
 ### Hash function
 
-Lootcoin uses [CubeHash-256](https://en.wikipedia.org/wiki/CubeHash) instead of SHA-256. CubeHash is a NIST SHA-3 finalist designed to be simple, parallelisable, and resistant to length-extension attacks.
+
 
 The block hash covers `(index, previous_hash, timestamp, nonce, tx_root)` serialised with `bincode`, where `tx_root` is a CubeHash-256 digest of the serialised transaction list. Committing to `tx_root` rather than the full transaction list keeps the mined header fixed-size regardless of how many transactions are included.
 

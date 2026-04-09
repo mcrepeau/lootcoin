@@ -1,5 +1,6 @@
 use bip39::Mnemonic;
-use clap::{Parser, Subcommand};
+use clap::{CommandFactory, Parser, Subcommand};
+use clap_complete::{generate, Shell};
 use lootcoin_core::{transaction::Transaction, wallet::Wallet};
 use lootcoin_wallet::derivation::key_from_mnemonic;
 use rand::{rngs::OsRng, RngCore};
@@ -12,7 +13,7 @@ use std::{fs, path::PathBuf};
 #[command(name = "lc", about = "Lootcoin CLI wallet", version)]
 struct Cli {
     /// Node base URL
-    #[arg(long, env = "LOOTCOIN_NODE", default_value = "http://127.0.0.1:3000")]
+    #[arg(long, env = "LOOTCOIN_NODE", default_value = "https://node1.lootcoin.org")]
     node: String,
 
     /// Path to wallet file
@@ -59,6 +60,22 @@ enum Commands {
     },
     /// Show current chain status
     Status,
+    /// Print shell completions to stdout
+    ///
+    /// Examples:
+    ///   lc completions bash  >> ~/.bash_completion
+    ///   lc completions zsh   >  ~/.zfunc/_lc  (then add ~/.zfunc to $fpath)
+    ///   lc completions fish  >  ~/.config/fish/completions/lc.fish
+    Completions {
+        /// Target shell
+        shell: Shell,
+    },
+    /// Print the man page to stdout
+    ///
+    /// Example:
+    ///   lc man | man -l -
+    #[command(hide = true)]
+    Man,
 }
 
 // ── Wallet file ───────────────────────────────────────────────────────────────
@@ -146,11 +163,23 @@ struct ChainHead {
 
 fn main() {
     let cli = Cli::parse();
-    let wallet_path = cli.wallet.unwrap_or_else(default_wallet_path);
+    let wallet_path = cli.wallet.clone().unwrap_or_else(default_wallet_path);
 
-    if let Err(e) = run(cli.command, &cli.node, &wallet_path) {
-        eprintln!("error: {}", e);
-        std::process::exit(1);
+    match cli.command {
+        Commands::Completions { shell } => {
+            generate(shell, &mut Cli::command(), "lc", &mut std::io::stdout());
+        }
+        Commands::Man => {
+            clap_mangen::Man::new(Cli::command())
+                .render(&mut std::io::stdout())
+                .expect("failed to render man page");
+        }
+        cmd => {
+            if let Err(e) = run(cmd, &cli.node, &wallet_path) {
+                eprintln!("error: {}", e);
+                std::process::exit(1);
+            }
+        }
     }
 }
 
@@ -174,6 +203,8 @@ fn run(cmd: Commands, node: &str, wallet_path: &PathBuf) -> Result<(), String> {
             cmd_history(&client, node, wallet_path, address, limit)
         }
         Commands::Status => cmd_status(&client, node),
+        // Handled in main() before run() is called.
+        Commands::Completions { .. } | Commands::Man => unreachable!(),
     }
 }
 
@@ -284,15 +315,6 @@ fn cmd_send(
     println!("To:     {}", receiver);
     println!("Amount: {} coins", amount);
     println!("Fee:    {} coins  (total debit: {})", fee, amount + fee);
-
-    // How many blocks before this tx becomes eligible for inclusion.
-    let wait = (120u64 / fee).saturating_sub(1);
-    if wait > 0 {
-        println!(
-            "Wait:   ~{} blocks (~{} min) before miners can include this tx",
-            wait, wait
-        );
-    }
     println!();
 
     eprint!("Confirm? [y/N] ");

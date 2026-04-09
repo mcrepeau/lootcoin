@@ -325,12 +325,12 @@ async fn main() {
     );
 
     let node_url = std::env::var("NODE_URL")
-        .unwrap_or_else(|_| "http://127.0.0.1:3000".to_string())
+        .unwrap_or_else(|_| "https://node1.lootcoin.org".to_string())
         .trim_end_matches('/')
         .to_string();
 
     let port: u16 = std::env::var("PORT")
-        .unwrap_or_else(|_| "3030".to_string())
+        .unwrap_or_else(|_| "3000".to_string())
         .parse()
         .expect("PORT must be a valid port number");
 

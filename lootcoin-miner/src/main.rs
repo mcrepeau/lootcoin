@@ -51,7 +51,7 @@ struct MinerConfig {
 
 fn load_config() -> anyhow::Result<MinerConfig> {
     let node_urls: Vec<String> = std::env::var("NODE_URLS")
-        .unwrap_or_else(|_| "http://127.0.0.1:3000".to_string())
+        .unwrap_or_else(|_| "https://node1.lootcoin.org".to_string())
         .split(',')
         .map(str::trim)
         .filter(|s| !s.is_empty())
