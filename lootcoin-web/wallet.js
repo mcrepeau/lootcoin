@@ -1,6 +1,7 @@
 import init, { Wallet } from "./lootcoin-wallet/pkg/lootcoin_wallet.js";
 import { addressToWordcode } from "./wordcode.js";
 import { attachTooltip } from "./tooltip.js";
+import { nodeFetch } from "./node.js";
 
 // bech32 alphabet used in lootcoin addresses (loot1…)
 const BECH32_CHARS = 'qpzry9x8gf2tvdw0s3jn54khce6mua7l';
@@ -22,7 +23,6 @@ let txHasMore = false;
 let networkStats = null;
 
 const byId = (id) => document.getElementById(id);
-function base() { return window.LOOTCOIN_NODE_URL.replace(/\/+$/, ""); }
 
 function setWalletInfo(w) {
   wallet = w;
@@ -78,7 +78,7 @@ function contributionTier(fee) {
 
 async function fetchNetworkStats() {
   try {
-    const res = await fetch(`${base()}/chain/head`);
+    const res = await nodeFetch(`/chain/head`);
     if (res.ok) networkStats = await res.json();
     updateFeeHint();
   } catch {
@@ -211,8 +211,8 @@ async function loadHistory() {
 
   // Fetch one extra to detect whether a next page exists
   const fetchLimit = TX_LIMIT + 1;
-  const res = await fetch(
-    `${base()}/address/${addr}/transactions?offset=${txOffset}&limit=${fetchLimit}`
+  const res = await nodeFetch(
+    `/address/${addr}/transactions?offset=${txOffset}&limit=${fetchLimit}`
   );
   if (!res.ok) {
     byId("txList").innerHTML = `<p class="empty-state">Failed to load history (${res.status}).</p>`;
@@ -228,7 +228,7 @@ async function loadHistory() {
 async function queryBalance() {
   const addr = byId("address").textContent;
   if (!addr || addr === "(none)") return;
-  const res = await fetch(`${base()}/balance/${addr}`);
+  const res = await nodeFetch(`/balance/${addr}`);
   if (!res.ok) {
     byId("balance").textContent = `error ${res.status}`;
     byId("pendingInfo").style.display = "none";
@@ -288,7 +288,7 @@ async function submitTransaction() {
   const submission = wallet.sign_transaction(receiver, amount, fee);
   const payload = JSON.parse(submission);
 
-  const res = await fetch(`${base()}/transactions`, {
+  const res = await nodeFetch(`/transactions`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),

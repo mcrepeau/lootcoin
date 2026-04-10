@@ -1,5 +1,6 @@
 import { addressToWordcode } from "./wordcode.js";
 import { attachTooltip } from "./tooltip.js";
+import { nodeFetch } from "./node.js";
 
 const BATCH = 15;
 const TX_BATCH = 20;
@@ -11,10 +12,6 @@ let lowestLoadedIndex  = null;
 let highestLoadedIndex = null; // track top of loaded range for live prepend
 let isLoading = false;
 let allLoaded = false;
-
-function base() {
-  return window.LOOTCOIN_NODE_URL.replace(/\/+$/, "");
-}
 
 function fmtTime(ts) {
   return new Date(ts * 1000).toLocaleString();
@@ -52,7 +49,7 @@ function hex(bytes) {
 
 async function loadHead() {
   try {
-    const res = await fetch(`${base()}/chain/head`);
+    const res = await nodeFetch(`/chain/head`);
     if (!res.ok) return;
     const data = await res.json();
     const prevHeight = chainHeight;
@@ -84,7 +81,7 @@ async function loadNewBlocks() {
   const limit = chainHeight - from; // chainHeight = index of next block to mine
   if (limit <= 0) return;
   try {
-    const res = await fetch(`${base()}/blocks?from=${from}&limit=${limit}`);
+    const res = await nodeFetch(`/blocks?from=${from}&limit=${limit}`);
     if (!res.ok) return;
     const blocks = await res.json();
     if (blocks.length === 0) return;
@@ -220,7 +217,7 @@ async function loadMoreBlocks() {
   }
 
   try {
-    const res = await fetch(`${base()}/blocks?from=${from}&limit=${limit}`);
+    const res = await nodeFetch(`/blocks?from=${from}&limit=${limit}`);
     if (!res.ok) { isLoading = false; return; }
     const blocks = await res.json();
 
@@ -338,7 +335,7 @@ async function searchAddress() {
   byId("addrBalanceCard").hidden = true;
 
   try {
-    const res = await fetch(`${base()}/balance/${addr}`);
+    const res = await nodeFetch(`/balance/${addr}`);
     if (res.ok) {
       const data = await res.json();
       byId("addrWordcode").textContent = addressToWordcode(addr);
@@ -357,8 +354,8 @@ async function loadMoreTxs() {
   if (btn) btn.disabled = true;
 
   try {
-    const res = await fetch(
-      `${base()}/address/${currentAddress}/transactions?offset=${txOffset}&limit=${TX_BATCH}`
+    const res = await nodeFetch(
+      `/address/${currentAddress}/transactions?offset=${txOffset}&limit=${TX_BATCH}`
     );
     if (!res.ok) throw new Error();
     const txs = await res.json();
@@ -416,7 +413,7 @@ async function loadLottery(tier) {
   byId("lotteryEmpty").hidden = true;
   const tierParam = tier ? `&tier=${tier}` : "";
   try {
-    const res = await fetch(`${base()}/lottery/recent-payouts?limit=100${tierParam}`);
+    const res = await nodeFetch(`/lottery/recent-payouts?limit=100${tierParam}`);
     if (!res.ok) throw new Error();
     const payouts = await res.json();
     if (payouts.length === 0) {

@@ -295,8 +295,19 @@
 
   let lastFetchTime = null;
 
-  function nodeUrl() {
-    return window.LOOTCOIN_NODE_URL.replace(/\/+$/, '');
+  const _nodes = (window.LOOTCOIN_NODE_URLS ?? [window.LOOTCOIN_NODE_URL])
+    .map(u => u.replace(/\/+$/, ''));
+  let _activeNodeIdx = 0;
+
+  async function nodeFetch(path, init) {
+    for (let i = 0; i < _nodes.length; i++) {
+      const idx = (_activeNodeIdx + i) % _nodes.length;
+      try {
+        const res = await fetch(_nodes[idx] + path, init);
+        if (res.status < 500) { _activeNodeIdx = idx; return res; }
+      } catch {}
+    }
+    throw new Error('All nodes unreachable');
   }
 
   function fmtTimeAgo(timestamp) {
@@ -316,8 +327,8 @@
     const pulse      = document.getElementById('livePotPulse');
     try {
       const [headResp, jackpotResp] = await Promise.all([
-        fetch(`${nodeUrl()}/chain/head`),
-        fetch(`${nodeUrl()}/lottery/recent-payouts?tier=jackpot&limit=1`),
+        nodeFetch('/chain/head'),
+        nodeFetch('/lottery/recent-payouts?tier=jackpot&limit=1'),
       ]);
       if (!headResp.ok) throw new Error(`HTTP ${headResp.status}`);
       const data = await headResp.json();
