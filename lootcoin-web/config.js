@@ -7,5 +7,5 @@
 //   volumes:
 //     - ./config.js:/usr/share/nginx/html/config.js:ro
 
-window.LOOTCOIN_NODE_URLS  = ["https://node1.lootcoin.org"];
+window.LOOTCOIN_NODE_URLS  = ["https://node1.lootcoin.org","https://node2.rimba-net.com"];
 window.LOOTCOIN_FAUCET_URL = "https://faucet.lootcoin.org";
