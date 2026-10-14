@@ -1,0 +1,9 @@
+# Force LF for files that break under CRLF:
+#  - Cargo manifests/locks: Cargo rejects CR inside TOML basic strings,
+#    and Docker builds copy the working tree directly into Linux images.
+#  - Shell scripts: a CR in a shebang breaks execution on Linux/CI.
+# core.autocrlf=true on Windows would otherwise rewrite these as CRLF
+# on every checkout.
+*.toml    text eol=lf
+Cargo.lock text eol=lf
+*.sh      text eol=lf
