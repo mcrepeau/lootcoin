@@ -71,25 +71,13 @@ A fresh node with no local history can bootstrap from a peer instead of replayin
 
 **`history_start`** — the `/node/info` endpoint exposes the lowest block height for which this node has complete data. `0` means full archive; any other value means the node synced from a snapshot and cannot serve history before that height.
 
-#### Adding a trust anchor
-
-Once a block height is considered irreversible, add it to `src/checkpoints.rs`:
-
-```rust
-pub const TRUSTED_CHECKPOINTS: &[(u64, &str)] = &[
-    (100_000, "0000a3f1..."),
-];
-```
-
-Rebuild and redeploy. Nodes running this binary will now advertise and serve a snapshot at that height, and fresh peers will use it automatically.
-
 ---
 
 ### Transaction replay protection
 
 Lootcoin uses **signature-based replay protection** rather than sequential per-sender nonces.
 
-When `Transaction::new_signed` is called, a cryptographically random 64-bit nonce is generated and included in the signed message. Because the nonce is part of the signed payload, two calls with identical sender, receiver, amount, and fee still produce **distinct signatures**. The node tracks every confirmed transaction's Ed25519 signature in a `confirmed_signatures` set; a second submission of the same signature bytes is rejected as a replay.
+When `Transaction::new_signed` is called, a cryptographically random nonce is generated and included in the signed message. It is masked to 53 bits so the value round-trips losslessly through JSON (JavaScript's `Number` is exact only up to 2^53 − 1); 53 bits still leaves ~2^26 expected transactions before the first collision (birthday bound). Because the nonce is part of the signed payload, two calls with identical sender, receiver, amount, and fee still produce **distinct signatures**. The node tracks every confirmed transaction's Ed25519 signature in a `confirmed_signatures` set; a second submission of the same signature bytes is rejected as a replay.
 
 **What this means for clients:**
 

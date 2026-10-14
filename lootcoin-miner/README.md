@@ -7,7 +7,7 @@ Miner for Lootcoin. Fetches pending transactions from a node, assembles a block,
 ## How it works
 
 1. **Fetch work** — queries `/chain/head` for the current height, difficulty, and tip hash, then `/mempool` for pending transactions.
-2. **Select transactions** — idle network (≤ 200 pending): include everything sorted by fee descending. Busy network (> 200 pending): gate by fee-tier eligibility so high-fee senders are included first and low-fee senders age in over time. A transaction with fee `f` becomes eligible after `(120 / f) - 1` blocks.
+2. **Select transactions** — idle network (≤ 240 pending): include everything sorted by fee descending. Busy network (> 240 pending): gate by fee-tier eligibility so high-fee senders are included first and low-fee senders age in over time. A transaction with fee `f` becomes eligible after `(120 / f) - 1` blocks.
 3. **Mine** — increments a nonce and hashes with CubeHash-256 until the block hash meets the current difficulty target. Difficulty is a fractional bit count (e.g. `26.47`) — see `lootcoin-core` for how the threshold is evaluated. Runs in a blocking thread so the async runtime stays free.
 4. **Cancel on new block** — a background task subscribes to the node's `/events` SSE stream and sets a cancel flag the moment a `block` event arrives, discarding the stale job immediately. Falls back to polling `/chain/head` every 2 s if SSE is unavailable.
 5. **Submit** — POSTs the completed block to `/blocks`. On rejection the miner logs a warning and fetches fresh work.

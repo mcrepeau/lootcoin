@@ -90,7 +90,7 @@ lc status --node http://localhost:3001
 
 ```
 Height:         1
-Difficulty:     18.00 bits
+Difficulty:     25.00 bits
 Avg block time: 0.0 s
 Mempool:        0 pending tx(s)
 Lottery pot:    99000000 coins
