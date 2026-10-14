@@ -395,7 +395,7 @@ function renderLotteryRows(payouts) {
     const wc = `<span class="wordcode-tip" data-address="${p.receiver}">${addressToWordcode(p.receiver)}</span>`;
     const timePart = p.block_timestamp != null ? ` · ${fmtTime(p.block_timestamp)}` : "";
     return `
-      <div class="tx-item">
+      <div class="tx-item" data-block-index="${p.block_index}">
         <div class="tx-left">
           <span class="tx-badge ${tierClass}">${p.tier.toUpperCase()}</span>
           <span class="tx-amount tx-amount-in">+${fmt(p.amount)}</span>
@@ -496,3 +496,22 @@ setInterval(loadHead, 15_000);
 
 // Initial load
 reset();
+
+// ── Deep links (explorer.html#payout=<height>) ─────────────────────────────
+
+// Shared from the home page ticker: open the Lottery tab and highlight the
+// payout(s) settled in the referenced block.
+async function openDeepLink() {
+  const match = location.hash.match(/^#payout=(\d+)$/);
+  if (!match) return;
+  const target = Number(match[1]);
+  showTab("lottery");
+  await loadLottery("");
+  const rows = [...document.querySelectorAll("#lotteryList [data-block-index]")]
+    .filter(r => Number(r.dataset.blockIndex) === target);
+  if (rows.length === 0) return; // block older than the last 100 payouts
+  rows.forEach(r => r.classList.add("row-highlight"));
+  rows[0].scrollIntoView({ block: "center", behavior: "smooth" });
+}
+
+openDeepLink();

@@ -1882,6 +1882,60 @@ button:disabled {
   font-size: 0.82rem;
 }
 
+/* ── Floating latest-payout toast ───────────────────────────────────── */
+
+.payout-toast {
+  position: fixed;
+  right: 20px;
+  bottom: 20px;
+  z-index: 50;
+  max-width: 320px;
+  background: var(--card);
+  border: 1px solid rgba(255, 183, 77, 0.3);
+  border-radius: 12px;
+  padding: 12px 16px;
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.45);
+  font-size: 0.8rem;
+}
+
+.payout-toast.hidden { display: none; }
+.payout-toast.flash { animation: ticker-flash 2s ease-out; }
+
+.payout-toast-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+}
+
+.payout-toast-label {
+  font-size: 0.6rem;
+  font-weight: 700;
+  letter-spacing: 2px;
+  text-transform: uppercase;
+  color: var(--primary);
+  opacity: 0.7;
+  margin-bottom: 4px;
+  white-space: nowrap;
+}
+
+.payout-toast a { color: var(--muted); }
+.payout-toast a:hover { color: var(--primary); }
+
+.payout-toast-x {
+  color: var(--dim);
+  font-size: 0.95rem;
+  line-height: 1;
+  padding: 0 2px;
+  margin: -2px -6px 0 0;
+  cursor: pointer;
+}
+
+.payout-toast-x:hover { color: var(--text); }
+
+@media (max-width: 600px) {
+  .payout-toast { left: 12px; right: 12px; bottom: 12px; max-width: none; }
+}
+
 /* ── Responsive ─────────────────────────────────────────────────────────────── */
 
 @media (max-width: 768px) {
@@ -1924,3 +1978,10 @@ button:disabled {
 @media (max-width: 380px) {
   .tiers-grid { grid-template-columns: 1fr; }
 }
+@keyframes ticker-flash {
+  0%   { background: rgba(255, 183, 77, 0.18); }
+  100% { background: transparent; }
+}
+
+/* Explorer: deep-linked payout highlight */
+.tx-item.row-highlight { animation: ticker-flash 3s ease-out; }

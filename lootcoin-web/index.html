@@ -289,6 +289,15 @@
   Lootcoin &mdash; 2026
 </footer>
 
+<!-- ── Floating latest-payout toast ── -->
+<div class="payout-toast hidden" id="payoutToast">
+  <div class="payout-toast-head">
+    <span class="payout-toast-label">Latest Payout</span>
+    <span class="payout-toast-x" id="payoutToastClose" title="Dismiss">&times;</span>
+  </div>
+  <a id="payoutToastLink" href="explorer.html"></a>
+</div>
+
 <script>
   const REFRESH_MS = 30_000;
   const JACKPOT_DIVISOR = 500; // must match lootcoin-core/src/lottery.rs
@@ -355,8 +364,74 @@
 
   document.getElementById('potRefreshBtn').addEventListener('click', refreshPot);
 
+  // ── Floating toast: latest lottery payout ──────────────────────────────
+  const payoutToast = document.getElementById('payoutToast');
+  const payoutToastLink = document.getElementById('payoutToastLink');
+  let lastPayoutKey = '';
+  let sseSource = null;
+
+  function shortAddr(a) {
+    return a && a.length > 8 ? a.slice(0, 8) + '…' : a;
+  }
+
+  function hidePayoutToast() {
+    payoutToast.classList.add('hidden');
+  }
+
+  async function refreshLatestPayout() {
+    try {
+      const res = await nodeFetch('/lottery/recent-payouts?limit=1');
+      if (!res.ok) return;
+      const payouts = await res.json();
+      if (!Array.isArray(payouts) || payouts.length === 0) {
+        hidePayoutToast();
+        lastPayoutKey = '';
+        return;
+      }
+      const p = payouts[0];
+      const when = p.block_timestamp ? fmtTimeAgo(p.block_timestamp) : '';
+      payoutToastLink.textContent = shortAddr(p.receiver) + ' won '
+        + Number(p.amount).toLocaleString() + ' coins'
+        + (when ? ' ' + when : '');
+      payoutToastLink.href = 'explorer.html#payout=' + p.block_index;
+      const key = p.block_index + ':' + p.receiver + ':' + p.amount;
+      if (key !== lastPayoutKey) {
+        lastPayoutKey = key;
+        // reappear (if dismissed) and flash when a new payout lands
+        payoutToast.classList.remove('hidden');
+        payoutToast.classList.remove('flash');
+        void payoutToast.offsetWidth;
+        payoutToast.classList.add('flash');
+      }
+    } catch (_) { /* keep last render */ }
+  }
+
+  document.getElementById('payoutToastClose')
+    .addEventListener('click', hidePayoutToast);
+
+  // Instant refresh the moment a new block lands, via the node's SSE
+  // event stream; polling below remains as the fallback.
+  function connectEvents() {
+    if (sseSource) sseSource.close();
+    const es = new EventSource(_nodes[_activeNodeIdx] + '/events');
+    sseSource = es;
+    es.onmessage = (ev) => {
+      try {
+        const event = JSON.parse(ev.data);
+        if (event.type === 'block') { refreshPot(); refreshLatestPayout(); }
+      } catch (_) {}
+    };
+    es.onerror = () => {
+      es.close();
+      if (sseSource === es) sseSource = null;
+      setTimeout(connectEvents, REFRESH_MS);
+    };
+  }
+
   refreshPot();
-  setInterval(refreshPot, REFRESH_MS);
+  refreshLatestPayout();
+  connectEvents();
+  setInterval(() => { refreshPot(); refreshLatestPayout(); }, REFRESH_MS);
 </script>
 </body>
 </html>
