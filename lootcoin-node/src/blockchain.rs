@@ -357,10 +357,12 @@ impl Blockchain {
 
     /// Apply a transaction to the derived state. Permissive by design: a
     /// transaction whose sender cannot cover `amount + fee` is silently
-    /// skipped. Production callers (`update_state`) pre-validate every
-    /// transaction before calling this, and verify the conservation
-    /// invariant after applying each block — a silent skip in the apply
-    /// path would trip that check and abort the node.
+    /// skipped, and its signature is then *not* recorded. Production
+    /// callers (`update_state`) pre-validate every transaction before
+    /// calling this and assert two effects afterwards: the tx's signature
+    /// is in `confirmed_signatures` (catches a silently skipped
+    /// transaction) and the block's supply changed by exactly its coinbase
+    /// (catches partial application). Either violation aborts the node.
     pub fn apply_transaction(&mut self, tx: &Transaction) {
         if tx.sender.is_empty() {
             *self.balances.entry(tx.receiver.clone()).or_insert(0) += tx.amount;
@@ -639,10 +641,25 @@ impl Blockchain {
         //    consistent regardless of how many txs are in the block.
         let mut total_block_fees: u64 = 0;
         for tx in &block.transactions {
-            if !tx.sender.is_empty() {
+            let is_coinbase = tx.sender.is_empty();
+            if !is_coinbase {
                 total_block_fees = total_block_fees.saturating_add(tx.fee);
             }
             self.apply_transaction(tx);
+            // Post-condition for pre-validated transactions: apply_transaction
+            // records a signature only on a successful application, so its
+            // absence means the tx was silently skipped. A silent skip would
+            // leave the derived state diverging from the block contents —
+            // fail loudly instead of letting the books drift from the trail.
+            if !is_coinbase && !self.confirmed_signatures.contains(&tx.signature) {
+                error!(
+                    "Block {}: transaction to {} for {} coins passed pre-validation \
+                     but was not applied — aborting so the derived state cannot \
+                     diverge from the block contents.",
+                    block.index, tx.receiver, tx.amount
+                );
+                std::process::abort();
+            }
         }
         let miner_fee_share = total_block_fees / 2; // floor: equal split; odd remainder goes to pot
         if miner_fee_share > 0 {
@@ -1443,6 +1460,26 @@ mod tests {
         chain.apply_transaction(&tx);
         assert_eq!(chain.get_balance("broke"), 0);
         assert_eq!(chain.get_balance("alice"), 0);
+    }
+
+    #[test]
+    fn apply_noop_does_not_record_signature() {
+        // update_state relies on this: a silently skipped transaction does
+        // not record its signature — that post-condition is what lets the
+        // apply loop detect the no-op path and abort instead of letting the
+        // derived state diverge from the block contents.
+        let mut chain = make_chain();
+        let tx = Transaction {
+            sender: "broke".to_string(),
+            receiver: "alice".to_string(),
+            amount: 100,
+            fee: 10,
+            nonce: 0,
+            public_key: [0u8; 32],
+            signature: vec![7],
+        };
+        chain.apply_transaction(&tx);
+        assert!(!chain.confirmed_signatures.contains(&vec![7u8]));
     }
 
     #[test]

@@ -11,6 +11,7 @@ services:
       RUST_LOG: info
       PEERS: "http://node2:3000,http://node3:3000"
       NODE_URL: "http://node1:3000"
+    restart: unless-stopped
   
   node2:
     build:
@@ -27,6 +28,7 @@ services:
       RUST_LOG: info
       PEERS: "http://node1:3000,http://node3:3000"
       NODE_URL: "http://node2:3000"
+    restart: unless-stopped
 
   node3:
     build:
@@ -44,6 +46,7 @@ services:
       PEERS: "http://node1:3000,http://node2:3000"
       NODE_URL: "http://node3:3000"
       ARCHIVE: 1
+    restart: unless-stopped
 
   web:
     build:
