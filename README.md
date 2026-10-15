@@ -79,6 +79,9 @@ See [QUICKSTART Guide](QUICKSTART.md) to get a local chain running, mine your fi
 
 ### Node
 
+Each release archive also contains a `lootcoin-node` binary for operators who prefer
+not to use Docker. To build from source:
+
 ```bash
 cargo run -p lootcoin-node
 # Listens on http://127.0.0.1:3000 by default
@@ -91,6 +94,10 @@ cargo run -p lootcoin-node
 ```
 
 ### Miner
+
+Prebuilt binaries for Windows, macOS, and Linux are attached to every
+[GitHub release](https://github.com/mcrepeau/lootcoin/releases) — download the archive for your
+platform, extract it, set `MINER_ADDRESS`, and run the binary. To build from source:
 
 ```bash
 MINER_ADDRESS=loot1… cargo run -p lootcoin-miner
