@@ -206,19 +206,11 @@ jobs:
         with:
           key: wasm32-unknown-unknown
 
-      - name: Install wasm-pack and wasm-opt
-        run: |
-          curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
-          sudo apt-get install -y --no-install-recommends binaryen
+      - name: Install wasm-pack
+        run: curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
 
       - name: Build WASM
         run: wasm-pack build lootcoin-wallet --target web --release
-
-      - name: Optimise WASM
-        run: |
-          wasm-opt -Oz \
-            -o lootcoin-wallet/pkg/lootcoin_wallet_bg.wasm \
-               lootcoin-wallet/pkg/lootcoin_wallet_bg.wasm
 
       - name: Assemble dist
         run: |
