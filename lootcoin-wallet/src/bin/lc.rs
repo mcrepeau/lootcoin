@@ -15,13 +15,14 @@ struct Cli {
     /// Node base URL
     #[arg(
         long,
+        global = true,
         env = "LOOTCOIN_NODE",
         default_value = "https://node1.lootcoin.org"
     )]
     node: String,
 
     /// Path to wallet file
-    #[arg(long, env = "LOOTCOIN_WALLET")]
+    #[arg(long, global = true, env = "LOOTCOIN_WALLET")]
     wallet: Option<PathBuf>,
 
     #[command(subcommand)]
@@ -53,6 +54,9 @@ enum Commands {
         /// Transaction fee in coins (minimum 2)
         #[arg(long, default_value_t = 2)]
         fee: u64,
+        /// Skip the confirmation prompt (for scripts)
+        #[arg(long)]
+        yes: bool,
     },
     /// Show transaction history
     History {
@@ -202,7 +206,8 @@ fn run(cmd: Commands, node: &str, wallet_path: &PathBuf) -> Result<(), String> {
             receiver,
             amount,
             fee,
-        } => cmd_send(&client, node, wallet_path, receiver, amount, fee),
+            yes,
+        } => cmd_send(&client, node, wallet_path, receiver, amount, fee, yes),
         Commands::History { address, limit } => {
             cmd_history(&client, node, wallet_path, address, limit)
         }
@@ -307,6 +312,7 @@ fn cmd_send(
     receiver: String,
     amount: u64,
     fee: u64,
+    yes: bool,
 ) -> Result<(), String> {
     if fee < 2 {
         return Err("Fee must be at least 2 coins".to_string());
@@ -321,14 +327,16 @@ fn cmd_send(
     println!("Fee:    {} coins  (total debit: {})", fee, amount + fee);
     println!();
 
-    eprint!("Confirm? [y/N] ");
-    let mut line = String::new();
-    std::io::stdin()
-        .read_line(&mut line)
-        .map_err(|e| e.to_string())?;
-    if !line.trim().eq_ignore_ascii_case("y") {
-        println!("Cancelled.");
-        return Ok(());
+    if !yes {
+        eprint!("Confirm? [y/N] ");
+        let mut line = String::new();
+        std::io::stdin()
+            .read_line(&mut line)
+            .map_err(|e| e.to_string())?;
+        if !line.trim().eq_ignore_ascii_case("y") {
+            println!("Cancelled.");
+            return Ok(());
+        }
     }
 
     let tx = Transaction::new_signed(&wallet, receiver, amount, fee);

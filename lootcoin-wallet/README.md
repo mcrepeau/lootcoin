@@ -75,9 +75,10 @@ Balance:   1500 coins
 Spendable: 1388 coins  (112 pending in mempool)
 ```
 
-#### `lc send <RECEIVER> <AMOUNT> [--fee <FEE>]`
+#### `lc send <RECEIVER> <AMOUNT> [--fee <FEE>] [--yes]`
 
-Sign and broadcast a transaction. Prompts for confirmation before submitting.
+Sign and broadcast a transaction. Prompts for confirmation before submitting;
+`--yes` skips the prompt (for scripts — see `scripts/smoke.sh`).
 
 ```
 $ lc send loot1... 100 --fee 12
