@@ -1674,7 +1674,11 @@ mod tests {
 
         let bob = Wallet::new();
         let signed_tx = Transaction::new_signed(&alice, bob.get_address(), 100, 10);
-        let b = next_block(&chain, vec![coinbase_tx("miner"), signed_tx], GENESIS_TS + 2);
+        let b = next_block(
+            &chain,
+            vec![coinbase_tx("miner"), signed_tx],
+            GENESIS_TS + 2,
+        );
         chain.apply_in_memory(b, None);
 
         // The fee moved sender → receiver/pot/miner; only coinbase minted.
@@ -1708,7 +1712,10 @@ mod tests {
         }
 
         // Each filler minted exactly 1 coinbase coin; the payout only moved coins.
-        assert_eq!(chain.total_supply(), supply_before + u128::from(REVEAL_BLOCKS));
+        assert_eq!(
+            chain.total_supply(),
+            supply_before + u128::from(REVEAL_BLOCKS)
+        );
     }
 
     // ── apply_in_memory: invalid blocks ──────────────────────────────────────
