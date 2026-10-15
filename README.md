@@ -73,6 +73,12 @@ This is a Cargo workspace. [`lootcoin-core`](https://github.com/mcrepeau/lootcoi
 
 See [QUICKSTART Guide](QUICKSTART.md) to get a local chain running, mine your first block, and send coins in ~15 minutes
 
+With the stack up, a single command exercises the full wiring — node, faucet, miner, and the wallet CLI:
+
+```bash
+scripts/smoke.sh
+```
+
 ---
 
 ## Running components individually
