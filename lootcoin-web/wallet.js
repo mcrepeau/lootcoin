@@ -2,6 +2,7 @@ import init, { Wallet } from "./lootcoin-wallet/pkg/lootcoin_wallet.js";
 import { addressToWordcode } from "./wordcode.js";
 import { attachTooltip } from "./tooltip.js";
 import { nodeFetch } from "./node.js";
+import { hasVault, readVaultMeta, saveVault, unlockVault, forgetVault } from "./vault.js";
 
 // bech32 alphabet used in lootcoin addresses (loot1…)
 const BECH32_CHARS = 'qpzry9x8gf2tvdw0s3jn54khce6mua7l';
@@ -24,6 +25,41 @@ let networkStats = null;
 
 const byId = (id) => document.getElementById(id);
 
+// ── Device vault UI state ──────────────────────────────────────────────
+// Reflects the vault's existence and whether it matches the loaded wallet
+// in the three surfaces: the unlock card, the save/forget buttons, and
+// the button labels (saving a different wallet replaces the saved one).
+function shortAddr(a) {
+  return a && a.length > 8 ? a.slice(0, 8) + "…" : a;
+}
+
+function updateVaultUI() {
+  const meta = readVaultMeta();
+  const vaultExists = meta !== null;
+  const unlock = byId("unlockSection");
+  if (vaultExists && !wallet) {
+    byId("unlockSavedAddr").textContent = meta.addr ? shortAddr(meta.addr) : "a wallet";
+    unlock.style.display = "";
+    byId("walletEmptyDefault").style.display = "none";
+  } else {
+    unlock.style.display = "none";
+    byId("walletEmptyDefault").style.display = "";
+  }
+  const saveBtn = byId("saveToDevice");
+  const forgetBtn = byId("forgetDeviceWallet");
+  if (wallet) {
+    const mine = vaultExists && meta.addr === wallet.address();
+    saveBtn.style.display = mine ? "none" : "";
+    saveBtn.textContent = vaultExists && !mine
+      ? "Save this wallet on this device (replaces the saved one)"
+      : "Save on this device";
+    forgetBtn.style.display = vaultExists ? "" : "none";
+  } else {
+    saveBtn.style.display = "none";
+    forgetBtn.style.display = "none";
+  }
+}
+
 function setWalletInfo(w) {
   wallet = w;
   const addr = wallet.address();
@@ -37,6 +73,7 @@ function setWalletInfo(w) {
   byId("sendCard").classList.remove("collapsed");
   byId("historyCard").classList.remove("collapsed");
   txOffset = 0;
+  updateVaultUI();
   queryBalance();
 }
 
@@ -320,6 +357,77 @@ async function main() {
       card.classList.toggle("collapsed");
     });
   });
+
+  // ── Device vault: unlock, save, forget ────────────────────────────
+  updateVaultUI();
+
+  byId("unlockWallet").addEventListener("click", async () => {
+    const pw = byId("unlockPassword").value;
+    const err = byId("unlockError");
+    err.textContent = "";
+    if (!pw) { err.textContent = "Enter your password."; return; }
+    byId("unlockWallet").disabled = true;
+    try {
+      const payload = await unlockVault(pw);
+      if (!payload) {
+        err.textContent = "Incorrect password — or the saved data is corrupted.";
+        return;
+      }
+      let w;
+      if (payload.type === "mnemonic") w = Wallet.from_mnemonic(payload.value);
+      else if (payload.type === "hex") w = Wallet.from_secret_key_hex(payload.value);
+      if (!w) { err.textContent = "The saved wallet could not be restored."; return; }
+      byId("unlockPassword").value = "";
+      setWalletInfo(w);
+    } finally {
+      byId("unlockWallet").disabled = false;
+    }
+  });
+  byId("unlockPassword").addEventListener("keydown", (e) => {
+    if (e.key === "Enter") byId("unlockWallet").click();
+  });
+
+  const forgetSaved = () => {
+    if (confirm("Remove the saved wallet from this device? You will need your recovery phrase to open it again.")) {
+      forgetVault();
+      updateVaultUI();
+    }
+  };
+  byId("forgetSavedWallet").addEventListener("click", forgetSaved);
+  byId("forgetDeviceWallet").addEventListener("click", forgetSaved);
+
+  byId("saveToDevice").addEventListener("click", () => {
+    byId("saveVaultPass").value = "";
+    byId("saveVaultPass2").value = "";
+    byId("saveVaultError").textContent = "";
+    byId("saveVaultOverlay").style.display = "flex";
+    byId("saveVaultPass").focus();
+  });
+  byId("saveVaultCancel").addEventListener("click", () => {
+    byId("saveVaultOverlay").style.display = "none";
+  });
+  byId("saveVaultConfirm").addEventListener("click", async () => {
+    const pw = byId("saveVaultPass").value;
+    const pw2 = byId("saveVaultPass2").value;
+    const err = byId("saveVaultError");
+    err.textContent = "";
+    if (pw.length < 8) { err.textContent = "Password must be at least 8 characters."; return; }
+    if (pw !== pw2) { err.textContent = "Passwords do not match."; return; }
+    byId("saveVaultConfirm").disabled = true;
+    try {
+      const phrase = wallet.mnemonic_phrase();
+      const payload = phrase
+        ? { type: "mnemonic", value: phrase }
+        : { type: "hex", value: wallet.secret_key_hex() };
+      await saveVault(payload, wallet.address(), pw);
+      byId("saveVaultOverlay").style.display = "none";
+      updateVaultUI();
+    } catch (e) {
+      err.textContent = "Could not save: " + (e && e.message ? e.message : e);
+    } finally {
+      byId("saveVaultConfirm").disabled = false;
+    }
+  });
   byId("newWallet").addEventListener("click", () => {
     const w = new Wallet();
     const phrase = w.mnemonic_phrase();
@@ -452,6 +560,7 @@ async function main() {
     byId("txPagination").style.display = "none";
     byId("sendResult").textContent = "";
     byId("sendResult").className = "send-result";
+    updateVaultUI();
   });
 
   byId("getBalance").addEventListener("click", queryBalance);

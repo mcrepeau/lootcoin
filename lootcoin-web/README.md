@@ -9,7 +9,7 @@ Static web front-end for Lootcoin. Four pages served as plain HTML + JS + WASM �
 | File | URL | Description |
 |---|---|---|
 | `index.html` | `/` | Home page — live pot display, floating latest-payout toast (SSE), lottery explainer, fee schedule |
-| `wallet.html` | `/wallet.html` | Wallet — create/open wallet, send transactions, view history |
+| `wallet.html` | `/wallet.html` | Wallet — create/open wallet, send transactions, view history, optional encrypted save-on-device |
 | `explorer.html` | `/explorer.html` | Block explorer — live network stats, infinite-scroll block feed, deep-linkable lottery payouts (`#payout=<height>`) |
 | `faucet.html` | `/faucet.html` | Faucet — request testnet coins |
 

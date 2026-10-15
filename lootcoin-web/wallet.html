@@ -27,10 +27,21 @@
     </div>
     <div class="card-body">
       <div id="walletEmpty" class="wallet-empty">
-        <p>No wallet loaded. Create a new wallet or open an existing one with your secret key.</p>
-        <div class="wallet-empty-actions">
-          <button id="newWallet" class="btn-secondary">New Wallet</button>
-          <button id="openWallet" class="btn-secondary">Open Wallet</button>
+        <div id="unlockSection" style="display:none">
+          <p>A wallet saved on this device (<code id="unlockSavedAddr" class="address-hex">(none)</code>) is locked. Enter its password to unlock it.</p>
+          <input id="unlockPassword" type="password" placeholder="Password" autocomplete="current-password" style="width:100%" />
+          <p id="unlockError" class="fee-hint fee-hint-error mt-sm" style="min-height:1.1em"></p>
+          <div class="wallet-empty-actions">
+            <button id="unlockWallet" class="btn-secondary">Unlock</button>
+            <button id="forgetSavedWallet" class="btn-secondary">Forget Saved Wallet</button>
+          </div>
+        </div>
+        <div id="walletEmptyDefault">
+          <p>No wallet loaded. Create a new wallet or open an existing one with your secret key.</p>
+          <div class="wallet-empty-actions">
+            <button id="newWallet" class="btn-secondary">New Wallet</button>
+            <button id="openWallet" class="btn-secondary">Open Wallet</button>
+          </div>
         </div>
       </div>
       <div id="walletLoaded" style="display:none">
@@ -52,6 +63,10 @@
             </div>
           </div>
           <button id="getBalance" class="btn-chip">Refresh</button>
+        </div>
+        <div class="flex-row mt-md">
+          <button id="saveToDevice" class="btn-secondary flex-1" style="display:none">Save on this device</button>
+          <button id="forgetDeviceWallet" class="btn-secondary flex-1" style="display:none">Forget Saved Wallet</button>
         </div>
         <button id="closeWallet" class="btn-secondary" style="width:100%;margin-top:28px">Close Wallet</button>
       </div>
@@ -173,6 +188,23 @@
       I have written down my recovery phrase
     </label>
     <button id="closeNewWallet" class="mt-sm" disabled>Continue</button>
+  </div>
+</div>
+
+<!-- Save-to-device password modal -->
+<div id="saveVaultOverlay" class="modal-overlay" style="display:none">
+  <div class="modal-box">
+    <h3>Save Wallet on This Device</h3>
+    <p class="modal-warning">The wallet will be encrypted with this password and stored in this browser. Anyone who has the password — or your recovery phrase — can spend your coins. This is a convenience, not a backup: if the browser data is cleared, the wallet is gone, and only your recovery phrase can restore it.</p>
+    <label class="modal-label" for="saveVaultPass">Password</label>
+    <input id="saveVaultPass" type="password" autocomplete="new-password" />
+    <label class="modal-label mt-sm" for="saveVaultPass2">Confirm password</label>
+    <input id="saveVaultPass2" type="password" autocomplete="new-password" />
+    <p id="saveVaultError" class="fee-hint fee-hint-error mt-sm" style="min-height:1.1em"></p>
+    <div class="flex-row mt-md">
+      <button id="saveVaultCancel" class="btn-secondary flex-1">Cancel</button>
+      <button id="saveVaultConfirm" class="flex-1" style="margin-top:0">Save</button>
+    </div>
   </div>
 </div>
 

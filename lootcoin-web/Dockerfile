@@ -1,8 +1,7 @@
 # ── Stage 1: build WASM ───────────────────────────────────────────────────────
 FROM rust:slim AS wasm-builder
 
-# binaryen provides wasm-opt for reliable post-build size reduction.
-RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates binaryen \
+RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates \
     && curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh \
     && rm -rf /var/lib/apt/lists/*
 
@@ -11,10 +10,7 @@ COPY lootcoin-wallet ./lootcoin-wallet
 COPY Cargo.lock      ./
 # Minimal workspace so cargo can resolve the path without the other members.
 RUN printf '[workspace]\nmembers = ["lootcoin-wallet"]\nresolver = "2"\n\n[workspace.package]\nversion = "0.0.0"\nedition = "2021"\nauthors = []\nlicense = "AGPL-3.0-only"\n' > Cargo.toml
-RUN wasm-pack build lootcoin-wallet --target web \
-    && wasm-opt -Oz \
-         -o lootcoin-wallet/pkg/lootcoin_wallet_bg.wasm \
-            lootcoin-wallet/pkg/lootcoin_wallet_bg.wasm
+RUN wasm-pack build lootcoin-wallet --target web
 
 # ── Stage 2: serve static files ───────────────────────────────────────────────
 FROM nginx:alpine-slim
