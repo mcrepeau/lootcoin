@@ -23,7 +23,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
-use tracing::{debug, info};
+use tracing::{debug, error, info};
 
 /// Difficulty is expressed as a fractional number of leading zero **bits** required
 /// in the block hash. Fractional values allow sub-bit adjustments that eliminate
@@ -211,6 +211,12 @@ impl Blockchain {
         self.pot
     }
 
+    /// Total coins currently in existence: every balance plus the lottery pot.
+    /// Used by the per-block conservation check in `update_state`.
+    pub fn total_supply(&self) -> u128 {
+        self.balances.values().map(|&v| u128::from(v)).sum::<u128>() + u128::from(self.pot)
+    }
+
     pub fn get_difficulty(&self) -> f64 {
         self.current_difficulty
     }
@@ -349,6 +355,12 @@ impl Blockchain {
         balance >= tx.amount.saturating_add(tx.fee)
     }
 
+    /// Apply a transaction to the derived state. Permissive by design: a
+    /// transaction whose sender cannot cover `amount + fee` is silently
+    /// skipped. Production callers (`update_state`) pre-validate every
+    /// transaction before calling this, and verify the conservation
+    /// invariant after applying each block — a silent skip in the apply
+    /// path would trip that check and abort the node.
     pub fn apply_transaction(&mut self, tx: &Transaction) {
         if tx.sender.is_empty() {
             *self.balances.entry(tx.receiver.clone()).or_insert(0) += tx.amount;
@@ -568,6 +580,8 @@ impl Blockchain {
 
         // --- Apply block ---
 
+        let supply_before = self.total_supply();
+
         // 1) Settle maturing lottery tickets using this block's hash as randomness
         let current_index = block.index;
         let (mut to_settle, mut still_pending) = (Vec::new(), Vec::new());
@@ -639,6 +653,31 @@ impl Blockchain {
         }
         if let Some(m) = &self.metrics {
             m.record_fees(total_block_fees, miner_fee_share);
+        }
+
+        // 2.5) Conservation invariant — a runtime check that the books balance.
+        //      A block may change the money supply only by its coinbase
+        //      amount: fees (sender → receiver + pot), the miner's fee half
+        //      (pot → miner), and lottery payouts (pot → miner) all move
+        //      coins inside the system, never in or out of existence.
+        //      Verifying this on every applied block catches silent
+        //      accounting drift — e.g. a debit that fails without its
+        //      credit — at the point of occurrence, before it reaches the
+        //      database. O(addresses), cheap next to block validation.
+        let minted = block
+            .transactions
+            .first()
+            .filter(|t| t.sender.is_empty())
+            .map(|t| t.amount)
+            .unwrap_or(0);
+        let supply_after = self.total_supply();
+        if supply_after != supply_before + u128::from(minted) {
+            error!(
+                "Conservation violation applying block {}: supply {} -> {}, expected +{} (coinbase). \
+                 Aborting so corrupt state is never persisted.",
+                block.index, supply_before, supply_after, minted
+            );
+            std::process::abort();
         }
 
         // 3) Record block
@@ -1571,6 +1610,68 @@ mod tests {
         // 50/50 fee split: 5 to pot, 5 to miner (miner also has 1 from coinbase)
         assert_eq!(chain.get_pot(), 5);
         assert_eq!(chain.get_balance(&named_addr("miner")), 6); // 1 coinbase + 5 fee share
+    }
+
+    // ── Conservation invariant ────────────────────────────────────────────────
+
+    #[test]
+    fn total_supply_sums_balances_plus_pot() {
+        let mut chain = make_chain();
+        // genesis credited 1000 to genesis_miner
+        assert_eq!(chain.total_supply(), 1_000);
+        chain.balances.insert("x".to_string(), 7);
+        chain.pot = 3;
+        assert_eq!(chain.total_supply(), 1_000 + 7 + 3);
+    }
+
+    #[test]
+    fn supply_grows_only_by_coinbase_across_txs_and_fees() {
+        let mut chain = make_chain();
+        chain.seed_pot(10_000);
+        assert_eq!(chain.total_supply(), 1_000 + 10_000);
+
+        // Fund alice directly (coinbase is capped at 1) and sign a real tx.
+        let alice = Wallet::new();
+        chain.balances.insert(alice.get_address(), 500);
+        let supply_before = chain.total_supply();
+
+        let bob = Wallet::new();
+        let signed_tx = Transaction::new_signed(&alice, bob.get_address(), 100, 10);
+        let b = next_block(&chain, vec![coinbase_tx("miner"), signed_tx], GENESIS_TS + 2);
+        chain.apply_in_memory(b, None);
+
+        // The fee moved sender → receiver/pot/miner; only coinbase minted.
+        assert_eq!(chain.total_supply(), supply_before + 1);
+    }
+
+    #[test]
+    fn supply_grows_only_by_coinbase_across_lottery_settlement() {
+        let mut chain = make_chain();
+        chain.seed_pot(10_000);
+
+        // A tx-bearing block earns its miner a ticket (settles at H + REVEAL_BLOCKS).
+        let alice = Wallet::new();
+        chain.balances.insert(alice.get_address(), 500);
+        let bob = Wallet::new();
+        let signed_tx = Transaction::new_signed(&alice, bob.get_address(), 100, 10);
+        let mut ts = GENESIS_TS + 1;
+        let b = next_block(&chain, vec![coinbase_tx("miner"), signed_tx], ts);
+        chain.apply_in_memory(b, None);
+        ts += 1;
+        assert_eq!(chain.pending_tickets.len(), 1);
+        let supply_before = chain.total_supply();
+
+        // Coinbase-only fillers through the end of the reveal window. The
+        // ticket settles somewhere along the way (payout: pot → miner), and
+        // the conservation check in update_state runs on every one of them.
+        for _ in 0..REVEAL_BLOCKS {
+            let filler = next_block(&chain, vec![coinbase_tx("filler")], ts);
+            chain.apply_in_memory(filler, None);
+            ts += 1;
+        }
+
+        // Each filler minted exactly 1 coinbase coin; the payout only moved coins.
+        assert_eq!(chain.total_supply(), supply_before + u128::from(REVEAL_BLOCKS));
     }
 
     // ── apply_in_memory: invalid blocks ──────────────────────────────────────
