@@ -5,8 +5,16 @@
 // cycles through the rest on network errors or 5xx responses.
 // 2xx and 4xx are returned immediately — they are valid node answers.
 
+// Strip trailing slashes without a regex: /\/+$/ backtracks super-linearly
+// on inputs ending in a long run of slashes; a single backward scan is O(n).
+function stripTrailingSlashes(u) {
+  let end = u.length;
+  while (end > 0 && u.charCodeAt(end - 1) === 47) end--; // 47 = "/"
+  return u.slice(0, end);
+}
+
 const NODES = (window.LOOTCOIN_NODE_URLS ?? [window.LOOTCOIN_NODE_URL])
-  .map(u => u.replace(/\/+$/, ""));
+  .map(stripTrailingSlashes);
 
 let activeIdx = 0;
 
