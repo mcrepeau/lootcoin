@@ -260,6 +260,12 @@ impl Blockchain {
         self.pending_tickets = tickets;
     }
 
+    /// Pending lottery tickets, oldest first. Each settles (and pays `miner`)
+    /// at `created_height + REVEAL_BLOCKS`.
+    pub fn pending_tickets(&self) -> &[LootTicket] {
+        &self.pending_tickets
+    }
+
     /// Capture the full derived state at the current tip.
     /// Cheap clone of in-memory maps; called only every CHECKPOINT_INTERVAL blocks.
     pub fn snapshot(&self) -> CheckpointState {

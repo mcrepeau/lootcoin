@@ -166,6 +166,12 @@ All pending (unconfirmed) transactions.
 
 Most recent lottery payouts, newest first. Both parameters are optional.
 
+**GET /lottery/pending-tickets**
+
+Lottery tickets issued to miners of recent blocks that have not settled yet. Each
+entry contains the miner address that will be credited, the height of the block
+that issued the ticket, and the height at which it settles. Bounded by the
+reveal window: at most one ticket exists per recent block.
 `tier` filters by outcome tier: `small`, `medium`, `large`, or `jackpot`. Omit to return all tiers.
 `limit` defaults to `10`, maximum `100`.
 
