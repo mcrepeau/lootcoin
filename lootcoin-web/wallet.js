@@ -1,8 +1,9 @@
 import init, { Wallet } from "./lootcoin-wallet/pkg/lootcoin_wallet.js";
 import { addressToWordcode } from "./wordcode.js";
 import { attachTooltip } from "./tooltip.js";
-import { nodeFetch } from "./node.js";
-import { hasVault, readVaultMeta, saveVault, unlockVault, forgetVault } from "./vault.js";
+import { nodeFetch, subscribeEvents } from "./node.js";
+import { escapeHtml } from "./util.js";
+import { readVaultMeta, saveVault, unlockVault, forgetVault } from "./vault.js";
 
 // bech32 alphabet used in lootcoin addresses (loot1…)
 const BECH32_CHARS = 'qpzry9x8gf2tvdw0s3jn54khce6mua7l';
@@ -74,7 +75,7 @@ function setWalletInfo(w) {
   byId("historyCard").classList.remove("collapsed");
   txOffset = 0;
   updateVaultUI();
-  queryBalance();
+  void queryBalance();
 }
 
 
@@ -172,7 +173,7 @@ function renderTxList(txs, myAddr) {
     return;
   }
 
-  list.innerHTML = txs.map(tx => {
+  list.innerHTML = DOMPurify.sanitize(txs.map(tx => {
     const isCoinbase = !tx.sender;
     const isIn = tx.receiver === myAddr;
     const isOut = tx.sender === myAddr;
@@ -202,13 +203,13 @@ function renderTxList(txs, myAddr) {
       badgeText = "OUT";
       amountClass = "tx-amount-out";
       amountText = `-${fmt(tx.amount)}`;
-      counterpart = `To: <span class="wordcode-tip" data-address="${tx.receiver}">${addressToWordcode(tx.receiver)}</span>`;
+      counterpart = `To: <span class="wordcode-tip" data-address="${escapeHtml(tx.receiver)}">${escapeHtml(addressToWordcode(tx.receiver))}</span>`;
     } else {
       badgeClass = "tx-badge-in";
       badgeText = "IN";
       amountClass = "tx-amount-in";
       amountText = `+${fmt(tx.amount)}`;
-      counterpart = `From: <span class="wordcode-tip" data-address="${tx.sender}">${addressToWordcode(tx.sender)}</span>`;
+      counterpart = `From: <span class="wordcode-tip" data-address="${escapeHtml(tx.sender)}">${escapeHtml(addressToWordcode(tx.sender))}</span>`;
     }
 
     const feeLine = (!isCoinbase && isOut && tx.fee > 0)
@@ -226,7 +227,7 @@ function renderTxList(txs, myAddr) {
           <div class="tx-meta">Block #${tx.block_index}${feeLine}</div>
         </div>
       </div>`;
-  }).join("");
+  }).join(""));
 }
 
 // ── Address tooltip (history panel) ──────────────────────────────────────────
@@ -248,39 +249,48 @@ async function loadHistory() {
 
   // Fetch one extra to detect whether a next page exists
   const fetchLimit = TX_LIMIT + 1;
-  const res = await nodeFetch(
-    `/address/${addr}/transactions?offset=${txOffset}&limit=${fetchLimit}`
-  );
-  if (!res.ok) {
-    byId("txList").innerHTML = `<p class="empty-state">Failed to load history (${res.status}).</p>`;
-    return;
+  try {
+    const res = await nodeFetch(
+      `/address/${addr}/transactions?offset=${txOffset}&limit=${fetchLimit}`
+    );
+    if (!res.ok) {
+      byId("txList").innerHTML = `<p class="empty-state">Failed to load history (${res.status}).</p>`;
+      return;
+    }
+    const data = await res.json();
+    txHasMore = data.length > TX_LIMIT;
+    const page = txHasMore ? data.slice(0, TX_LIMIT) : data;
+    renderTxList(page, addr);
+    renderPagination();
+  } catch {
+    byId("txList").innerHTML = `<p class="empty-state">Failed to load history (node unreachable).</p>`;
   }
-  const data = await res.json();
-  txHasMore = data.length > TX_LIMIT;
-  const page = txHasMore ? data.slice(0, TX_LIMIT) : data;
-  renderTxList(page, addr);
-  renderPagination();
 }
 
 async function queryBalance() {
   const addr = byId("address").textContent;
   if (!addr || addr === "(none)") return;
-  const res = await nodeFetch(`/balance/${addr}`);
-  if (!res.ok) {
-    byId("balance").textContent = `error ${res.status}`;
-    byId("pendingInfo").style.display = "none";
-  } else {
-    const data = await res.json();
-    byId("balance").textContent = fmt(data.balance);
-    // Show spendable balance only when pending transactions reduce it.
-    if (data.spendable_balance < data.balance) {
-      byId("spendable").textContent = fmt(data.spendable_balance);
-      byId("pendingInfo").style.display = "";
-    } else {
+  try {
+    const res = await nodeFetch(`/balance/${addr}`);
+    if (!res.ok) {
+      byId("balance").textContent = `error ${res.status}`;
       byId("pendingInfo").style.display = "none";
+    } else {
+      const data = await res.json();
+      byId("balance").textContent = fmt(data.balance);
+      // Show spendable balance only when pending transactions reduce it.
+      if (data.spendable_balance < data.balance) {
+        byId("spendable").textContent = fmt(data.spendable_balance);
+        byId("pendingInfo").style.display = "";
+      } else {
+        byId("pendingInfo").style.display = "none";
+      }
     }
+  } catch {
+    byId("balance").textContent = "unreachable";
+    byId("pendingInfo").style.display = "none";
   }
-  loadHistory();
+  void loadHistory();
 }
 
 /** Show the confirmation modal and resolve true/false when the user decides. */
@@ -325,11 +335,17 @@ async function submitTransaction() {
   const submission = wallet.sign_transaction(receiver, amount, fee);
   const payload = JSON.parse(submission);
 
-  const res = await nodeFetch(`/transactions`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload),
-  });
+  let res;
+  try {
+    res = await nodeFetch(`/transactions`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+  } catch (e) {
+    setErr(`Network error: ${e.message || e}`);
+    return;
+  }
 
   if (!res.ok) {
     const text = await res.text();
@@ -343,7 +359,7 @@ async function submitTransaction() {
   el.textContent = `Sent ${fmt(data.amount)} to ${addressToWordcode(data.receiver)}`;
   el.className = "send-result result-ok";
   // Refresh balance and history after a successful send
-  queryBalance();
+  void queryBalance();
 }
 
 async function main() {
@@ -361,7 +377,7 @@ async function main() {
   // ── Device vault: unlock, save, forget ────────────────────────────
   updateVaultUI();
 
-  byId("unlockWallet").addEventListener("click", async () => {
+  async function onUnlockWallet() {
     const pw = byId("unlockPassword").value;
     const err = byId("unlockError");
     err.textContent = "";
@@ -382,7 +398,8 @@ async function main() {
     } finally {
       byId("unlockWallet").disabled = false;
     }
-  });
+  }
+  byId("unlockWallet").addEventListener("click", () => { void onUnlockWallet(); });
   byId("unlockPassword").addEventListener("keydown", (e) => {
     if (e.key === "Enter") byId("unlockWallet").click();
   });
@@ -406,7 +423,7 @@ async function main() {
   byId("saveVaultCancel").addEventListener("click", () => {
     byId("saveVaultOverlay").style.display = "none";
   });
-  byId("saveVaultConfirm").addEventListener("click", async () => {
+  async function onSaveVaultConfirm() {
     const pw = byId("saveVaultPass").value;
     const pw2 = byId("saveVaultPass2").value;
     const err = byId("saveVaultError");
@@ -423,11 +440,12 @@ async function main() {
       byId("saveVaultOverlay").style.display = "none";
       updateVaultUI();
     } catch (e) {
-      err.textContent = "Could not save: " + (e && e.message ? e.message : e);
+      err.textContent = "Could not save: " + (e?.message || e);
     } finally {
       byId("saveVaultConfirm").disabled = false;
     }
-  });
+  }
+  byId("saveVaultConfirm").addEventListener("click", () => { void onSaveVaultConfirm(); });
   byId("newWallet").addEventListener("click", () => {
     const w = new Wallet();
     const phrase = w.mnemonic_phrase();
@@ -455,7 +473,7 @@ async function main() {
     byId("closeNewWallet").addEventListener("click", close);
   });
 
-  byId("copyMnemonic").addEventListener("click", async () => {
+  async function onCopyMnemonic() {
     const phrase = Array.from(byId("mnemonicGrid").querySelectorAll(".mnemonic-word"))
       .map(el => el.textContent.replace(/^\d+/, "").trim())
       .join(" ");
@@ -465,7 +483,8 @@ async function main() {
       btn.textContent = "Copied!";
       setTimeout(() => { btn.textContent = "Copy to Clipboard"; }, 1500);
     } catch {}
-  });
+  }
+  byId("copyMnemonic").addEventListener("click", () => { void onCopyMnemonic(); });
 
   byId("openWallet").addEventListener("click", () => {
     byId("openWalletPhrase").value = "";
@@ -533,7 +552,7 @@ async function main() {
     if (e.key === "Enter") byId("openWalletConfirm").click();
   });
 
-  byId("copyAddress").addEventListener("click", async () => {
+  async function onCopyAddress() {
     const addr = byId("address").textContent;
     if (!addr || addr === "(none)") return;
     try {
@@ -542,7 +561,8 @@ async function main() {
       btn.classList.add("copied");
       setTimeout(() => btn.classList.remove("copied"), 1500);
     } catch {}
-  });
+  }
+  byId("copyAddress").addEventListener("click", () => { void onCopyAddress(); });
 
   byId("closeWallet").addEventListener("click", () => {
     wallet = null;
@@ -563,8 +583,8 @@ async function main() {
     updateVaultUI();
   });
 
-  byId("getBalance").addEventListener("click", queryBalance);
-  byId("sendTx").addEventListener("click", submitTransaction);
+  byId("getBalance").addEventListener("click", () => { void queryBalance(); });
+  byId("sendTx").addEventListener("click", () => { void submitTransaction(); });
 
   byId("fee").addEventListener("input", updateFeeHint);
   document.querySelectorAll(".btn-preset").forEach(btn => {
@@ -574,10 +594,28 @@ async function main() {
     });
   });
 
-  // Fetch live network stats and refresh balance every 30s
-  fetchNetworkStats();
-  setInterval(fetchNetworkStats, 30_000);
-  setInterval(() => { if (wallet) queryBalance(); }, 30_000);
+  // Fetch live network stats and refresh balance every 30s — the fallback
+  // for anything the live event stream misses (or when SSE is blocked).
+  void fetchNetworkStats();
+  setInterval(() => { void fetchNetworkStats(); }, 30_000);
+  setInterval(() => { if (wallet) void queryBalance(); }, 30_000);
+
+  // Live updates: subscribe to the node's event stream and refresh the
+  // moment a block lands or one of our own transactions appears in the
+  // mempool, instead of waiting for the 30s poll.
+  subscribeEvents({
+    onBlock: () => {
+      void fetchNetworkStats();
+      if (wallet) void queryBalance();
+    },
+    onTransaction: (tx) => {
+      const myAddr = byId("address").textContent;
+      if (wallet && myAddr !== "(none)" && (tx.sender === myAddr || tx.receiver === myAddr)) {
+        void fetchNetworkStats();
+        void queryBalance();
+      }
+    },
+  });
 
   updateFeeHint();
 
@@ -592,15 +630,15 @@ async function main() {
 
   byId("txPrev").addEventListener("click", () => {
     txOffset = Math.max(0, txOffset - TX_LIMIT);
-    loadHistory();
+    void loadHistory();
   });
 
   byId("txNext").addEventListener("click", () => {
     if (txHasMore) {
       txOffset += TX_LIMIT;
-      loadHistory();
+      void loadHistory();
     }
   });
 }
 
-main();
+await main();

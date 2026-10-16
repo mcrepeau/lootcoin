@@ -1,6 +1,7 @@
 import { addressToWordcode } from "./wordcode.js";
 import { attachTooltip } from "./tooltip.js";
-import { nodeFetch } from "./node.js";
+import { nodeFetch, subscribeEvents } from "./node.js";
+import { escapeHtml } from "./util.js";
 
 const BATCH = 15;
 const TX_BATCH = 20;
@@ -102,7 +103,7 @@ function renderTxRows(txs) {
     let badgeClass, badgeText, amountClass, amountText, counterpart;
 
     const wc = (address) =>
-      `<span class="wordcode-tip" data-address="${address}">${addressToWordcode(address)}</span>`;
+      `<span class="wordcode-tip" data-address="${escapeHtml(address)}">${escapeHtml(addressToWordcode(address))}</span>`;
 
     if (isCoinbase) {
       badgeClass = "tx-badge-coinbase";
@@ -130,11 +131,11 @@ function renderTxRows(txs) {
       <div class="tx-item">
         <div class="tx-left">
           <span class="tx-badge ${badgeClass}">${badgeText}</span>
-          <span class="tx-amount ${amountClass}">${amountText}</span>
+          <span class="tx-amount ${amountClass}">${escapeHtml(amountText)}</span>
         </div>
         <div class="tx-right">
           <div class="tx-counterpart">${counterpart}</div>
-          <div class="tx-meta">${feeLine || "&nbsp;"}</div>
+          <div class="tx-meta">${feeLine ? escapeHtml(feeLine) : "&nbsp;"}</div>
         </div>
       </div>`;
   }).join("");
@@ -153,19 +154,19 @@ function createBlockEl(block) {
 
   const item = document.createElement("div");
   item.className = "block-item";
-  item.innerHTML = `
+  item.innerHTML = DOMPurify.sanitize(`
     <div class="block-header">
-      <span class="block-index">#${block.index}</span>
+      <span class="block-index">#${escapeHtml(block.index)}</span>
       <div class="block-meta">
-        <span class="block-txcount">${txLabel}</span>
-        <span class="block-time">${fmtTime(block.timestamp)}</span>
-        <span class="block-hash">${truncHash(hex(block.hash))}</span>
+        <span class="block-txcount">${escapeHtml(txLabel)}</span>
+        <span class="block-time">${escapeHtml(fmtTime(block.timestamp))}</span>
+        <span class="block-hash">${escapeHtml(truncHash(hex(block.hash)))}</span>
       </div>
       <span class="block-chevron">▼</span>
     </div>
     <div class="block-txs tx-list">
       ${renderTxRows(allRows)}
-    </div>`;
+    </div>`);
 
   const header  = item.querySelector(".block-header");
   const txsEl   = item.querySelector(".block-txs");
@@ -270,7 +271,7 @@ function renderAddrTxRows(txs, address) {
     let badgeClass, badgeText, amountClass, amountText, counterpart;
 
     const wc = (addr) =>
-      `<span class="wordcode-tip" data-address="${addr}">${addressToWordcode(addr)}</span>`;
+      `<span class="wordcode-tip" data-address="${escapeHtml(addr)}">${escapeHtml(addressToWordcode(addr))}</span>`;
 
     if (isCoinbase) {
       badgeClass = "tx-badge-coinbase";
@@ -310,11 +311,11 @@ function renderAddrTxRows(txs, address) {
       <div class="tx-item">
         <div class="tx-left">
           <span class="tx-badge ${badgeClass}">${badgeText}</span>
-          <span class="tx-amount ${amountClass}">${amountText}</span>
+          <span class="tx-amount ${amountClass}">${escapeHtml(amountText)}</span>
         </div>
         <div class="tx-right">
           <div class="tx-counterpart">${counterpart}</div>
-          <div class="tx-meta">${feePart}Block #${tx.block_index}</div>
+          <div class="tx-meta">${escapeHtml(`${feePart}Block #${tx.block_index}`)}</div>
         </div>
       </div>`;
   }).join("");
@@ -364,7 +365,7 @@ async function loadMoreTxs() {
       byId("txEmpty").textContent = "No transactions found for this address.";
       byId("txEmpty").hidden = false;
     } else if (txs.length > 0) {
-      byId("txList").insertAdjacentHTML("beforeend", renderAddrTxRows(txs, currentAddress));
+      byId("txList").insertAdjacentHTML("beforeend", DOMPurify.sanitize(renderAddrTxRows(txs, currentAddress)));
       txOffset += txs.length;
     }
 
@@ -389,20 +390,22 @@ async function loadMoreTxs() {
 
 let lotteryLoaded = false;
 
+const KNOWN_TIERS = new Set(["small", "medium", "large", "jackpot"]);
+
 function renderLotteryRows(payouts) {
   return payouts.map(p => {
-    const tierClass = `tx-badge-tier-${p.tier}`;
-    const wc = `<span class="wordcode-tip" data-address="${p.receiver}">${addressToWordcode(p.receiver)}</span>`;
+    const tierClass = KNOWN_TIERS.has(p.tier) ? `tx-badge-tier-${p.tier}` : "tx-badge-tier-unknown";
+    const wc = `<span class="wordcode-tip" data-address="${escapeHtml(p.receiver)}">${escapeHtml(addressToWordcode(p.receiver))}</span>`;
     const timePart = p.block_timestamp != null ? ` · ${fmtTime(p.block_timestamp)}` : "";
     return `
-      <div class="tx-item" data-block-index="${p.block_index}">
+      <div class="tx-item" data-block-index="${escapeHtml(p.block_index)}">
         <div class="tx-left">
-          <span class="tx-badge ${tierClass}">${p.tier.toUpperCase()}</span>
-          <span class="tx-amount tx-amount-in">+${fmt(p.amount)}</span>
+          <span class="tx-badge ${tierClass}">${escapeHtml(p.tier.toUpperCase())}</span>
+          <span class="tx-amount tx-amount-in">${escapeHtml(`+${fmt(p.amount)}`)}</span>
         </div>
         <div class="tx-right">
           <div class="tx-counterpart">Lottery → ${wc}</div>
-          <div class="tx-meta">Block #${p.block_index}${timePart}</div>
+          <div class="tx-meta">${escapeHtml(`Block #${p.block_index}${timePart}`)}</div>
         </div>
       </div>`;
   }).join("");
@@ -420,7 +423,7 @@ async function loadLottery(tier) {
       byId("lotteryEmpty").textContent = "No payouts found.";
       byId("lotteryEmpty").hidden = false;
     } else {
-      byId("lotteryList").innerHTML = renderLotteryRows(payouts);
+      byId("lotteryList").innerHTML = DOMPurify.sanitize(renderLotteryRows(payouts));
     }
   } catch {
     byId("lotteryEmpty").textContent = "Could not fetch lottery payouts.";
@@ -450,7 +453,7 @@ byId("tabBlocks").addEventListener("click",  () => showTab("blocks"));
 byId("tabTxs").addEventListener("click",     () => showTab("txs"));
 byId("tabLottery").addEventListener("click", () => {
   showTab("lottery");
-  if (!lotteryLoaded) loadLottery("");
+  if (!lotteryLoaded) void loadLottery("");
 });
 
 // Tier filter pills
@@ -459,14 +462,14 @@ for (const btn of document.querySelectorAll(".tier-filter-btn")) {
     document.querySelectorAll(".tier-filter-btn").forEach(b => b.classList.remove("active"));
     btn.classList.add("active");
     lotteryLoaded = false;
-    loadLottery(btn.dataset.tier);
+    void loadLottery(btn.dataset.tier);
   });
 }
 
 // ── Scroll listener ───────────────────────────────────────────────────────────
 
 document.querySelector(".explorer-main").addEventListener("scroll", () => {
-  if (!allLoaded && !isLoading && sentinelInView()) loadMoreBlocks();
+  if (!allLoaded && !isLoading && sentinelInView()) void loadMoreBlocks();
 });
 
 // ── Full reset ────────────────────────────────────────────────────────────────
@@ -486,23 +489,31 @@ async function reset() {
 
 // ── Event wiring ──────────────────────────────────────────────────────────────
 
-byId("refreshBtn").addEventListener("click", reset);
-byId("addrSearchBtn").addEventListener("click", searchAddress);
-byId("addrInput").addEventListener("keydown", (e) => { if (e.key === "Enter") searchAddress(); });
-byId("txLoadMoreBtn").addEventListener("click", loadMoreTxs);
+byId("refreshBtn").addEventListener("click", () => { void reset(); });
+byId("addrSearchBtn").addEventListener("click", () => { void searchAddress(); });
+byId("addrInput").addEventListener("keydown", (e) => { if (e.key === "Enter") void searchAddress(); });
+byId("txLoadMoreBtn").addEventListener("click", () => { void loadMoreTxs(); });
 
-// Auto-refresh stats only — don't disrupt scroll position
-setInterval(loadHead, 15_000);
+// Auto-refresh stats only — don't disrupt scroll position. Also the fallback
+// for anything the live event stream below misses while it is down.
+setInterval(() => { void loadHead(); }, 15_000);
+
+// Live updates: new blocks appear in the feed the moment they are found.
+// loadHead() refreshes the stats strip and prepends any new blocks to the
+// list — the same path the poll uses, now event-triggered.
+subscribeEvents({
+  onBlock: () => loadHead(),
+});
 
 // Initial load
-reset();
+await reset();
 
 // ── Deep links (explorer.html#payout=<height>) ─────────────────────────────
 
 // Shared from the home page ticker: open the Lottery tab and highlight the
 // payout(s) settled in the referenced block.
 async function openDeepLink() {
-  const match = location.hash.match(/^#payout=(\d+)$/);
+  const match = /^#payout=(\d+)$/.exec(location.hash);
   if (!match) return;
   const target = Number(match[1]);
   showTab("lottery");
@@ -514,4 +525,4 @@ async function openDeepLink() {
   rows[0].scrollIntoView({ block: "center", behavior: "smooth" });
 }
 
-openDeepLink();
+await openDeepLink();
