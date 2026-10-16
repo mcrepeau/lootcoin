@@ -1,6 +1,7 @@
 import { addressToWordcode } from "./wordcode.js";
 import { attachTooltip } from "./tooltip.js";
 import { nodeFetch, subscribeEvents } from "./node.js";
+import { escapeHtml } from "./util.js";
 
 const BATCH = 15;
 const TX_BATCH = 20;
@@ -102,7 +103,7 @@ function renderTxRows(txs) {
     let badgeClass, badgeText, amountClass, amountText, counterpart;
 
     const wc = (address) =>
-      `<span class="wordcode-tip" data-address="${address}">${addressToWordcode(address)}</span>`;
+      `<span class="wordcode-tip" data-address="${escapeHtml(address)}">${escapeHtml(addressToWordcode(address))}</span>`;
 
     if (isCoinbase) {
       badgeClass = "tx-badge-coinbase";
@@ -270,7 +271,7 @@ function renderAddrTxRows(txs, address) {
     let badgeClass, badgeText, amountClass, amountText, counterpart;
 
     const wc = (addr) =>
-      `<span class="wordcode-tip" data-address="${addr}">${addressToWordcode(addr)}</span>`;
+      `<span class="wordcode-tip" data-address="${escapeHtml(addr)}">${escapeHtml(addressToWordcode(addr))}</span>`;
 
     if (isCoinbase) {
       badgeClass = "tx-badge-coinbase";
@@ -389,15 +390,17 @@ async function loadMoreTxs() {
 
 let lotteryLoaded = false;
 
+const KNOWN_TIERS = ["small", "medium", "large", "jackpot"];
+
 function renderLotteryRows(payouts) {
   return payouts.map(p => {
-    const tierClass = `tx-badge-tier-${p.tier}`;
-    const wc = `<span class="wordcode-tip" data-address="${p.receiver}">${addressToWordcode(p.receiver)}</span>`;
+    const tierClass = KNOWN_TIERS.includes(p.tier) ? `tx-badge-tier-${p.tier}` : "tx-badge-tier-unknown";
+    const wc = `<span class="wordcode-tip" data-address="${escapeHtml(p.receiver)}">${escapeHtml(addressToWordcode(p.receiver))}</span>`;
     const timePart = p.block_timestamp != null ? ` · ${fmtTime(p.block_timestamp)}` : "";
     return `
       <div class="tx-item" data-block-index="${p.block_index}">
         <div class="tx-left">
-          <span class="tx-badge ${tierClass}">${p.tier.toUpperCase()}</span>
+          <span class="tx-badge ${tierClass}">${escapeHtml(p.tier.toUpperCase())}</span>
           <span class="tx-amount tx-amount-in">+${fmt(p.amount)}</span>
         </div>
         <div class="tx-right">

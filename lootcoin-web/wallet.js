@@ -2,6 +2,7 @@ import init, { Wallet } from "./lootcoin-wallet/pkg/lootcoin_wallet.js";
 import { addressToWordcode } from "./wordcode.js";
 import { attachTooltip } from "./tooltip.js";
 import { nodeFetch, subscribeEvents } from "./node.js";
+import { escapeHtml } from "./util.js";
 import { hasVault, readVaultMeta, saveVault, unlockVault, forgetVault } from "./vault.js";
 
 // bech32 alphabet used in lootcoin addresses (loot1…)
@@ -202,13 +203,13 @@ function renderTxList(txs, myAddr) {
       badgeText = "OUT";
       amountClass = "tx-amount-out";
       amountText = `-${fmt(tx.amount)}`;
-      counterpart = `To: <span class="wordcode-tip" data-address="${tx.receiver}">${addressToWordcode(tx.receiver)}</span>`;
+      counterpart = `To: <span class="wordcode-tip" data-address="${escapeHtml(tx.receiver)}">${escapeHtml(addressToWordcode(tx.receiver))}</span>`;
     } else {
       badgeClass = "tx-badge-in";
       badgeText = "IN";
       amountClass = "tx-amount-in";
       amountText = `+${fmt(tx.amount)}`;
-      counterpart = `From: <span class="wordcode-tip" data-address="${tx.sender}">${addressToWordcode(tx.sender)}</span>`;
+      counterpart = `From: <span class="wordcode-tip" data-address="${escapeHtml(tx.sender)}">${escapeHtml(addressToWordcode(tx.sender))}</span>`;
     }
 
     const feeLine = (!isCoinbase && isOut && tx.fee > 0)
