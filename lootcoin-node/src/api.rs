@@ -27,7 +27,7 @@ use tracing::{info, warn};
 use crate::blockchain::{BlockOutcome, Blockchain, CheckpointState};
 use crate::db::Db;
 use crate::gossip::{Gossip, NodeEvent};
-use crate::loot_ticket::LootTicket;
+use crate::loot_ticket::{LootTicket, REVEAL_BLOCKS};
 use crate::mempool::Mempool;
 use crate::metrics::Metrics;
 use lootcoin_core::block::MAX_BLOCK_TXS;
@@ -608,6 +608,37 @@ pub async fn list_mempool_handler(State(state): State<AppState>) -> Json<Vec<Mem
 pub struct RecentPayoutsQuery {
     pub tier: Option<String>,
     pub limit: Option<usize>,
+}
+
+/// A lottery ticket that has been issued to a miner but has not settled yet.
+#[derive(Serialize)]
+pub struct PendingTicket {
+    /// Miner address the payout will be credited to on settlement.
+    pub miner: String,
+    /// Height of the block that issued the ticket.
+    pub created_height: u64,
+    /// Height at which the ticket settles (created_height + REVEAL_BLOCKS).
+    pub settle_height: u64,
+}
+
+/// GET /lottery/pending-tickets — lottery tickets issued to miners of recent
+/// blocks that are still awaiting settlement. Bounded by REVEAL_BLOCKS: at
+/// most one ticket is issued per block and each settles REVEAL_BLOCKS later.
+pub async fn get_pending_tickets_handler(
+    State(state): State<AppState>,
+) -> Json<Vec<PendingTicket>> {
+    let chain = state.chain.read().await;
+    Json(
+        chain
+            .pending_tickets()
+            .iter()
+            .map(|t| PendingTicket {
+                miner: t.miner.clone(),
+                created_height: t.created_height,
+                settle_height: t.created_height + REVEAL_BLOCKS,
+            })
+            .collect(),
+    )
 }
 
 pub async fn get_recent_lottery_payouts_handler(
@@ -1240,6 +1271,7 @@ pub fn router(state: AppState) -> Router {
             "/lottery/recent-payouts",
             get(get_recent_lottery_payouts_handler),
         )
+        .route("/lottery/pending-tickets", get(get_pending_tickets_handler))
         .route("/blocks", get(get_blocks_handler))
         .route("/chain/head", get(chain_head_handler))
         .route("/chain/block-hash/{height}", get(block_hash_handler))
@@ -1725,6 +1757,68 @@ mod tests {
     }
 
     // ── POST /peers ───────────────────────────────────────────────────────────
+
+    // ── GET /lottery/pending-tickets ─────────────────────────────────────────
+
+    #[tokio::test]
+    async fn pending_tickets_empty_initially() {
+        let wallet = test_wallet();
+        let state = make_state(&wallet);
+        let body = json_body(get_req(state, "/lottery/pending-tickets").await).await;
+        assert_eq!(body, serde_json::json!([]));
+    }
+
+    #[tokio::test]
+    async fn pending_tickets_coinbase_only_block_issues_no_ticket() {
+        let wallet = test_wallet();
+        let state = make_state(&wallet);
+        let block = next_valid_block(&state).await;
+        let resp = post_json(state.clone(), "/blocks", serde_json::json!(block)).await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = json_body(get_req(state, "/lottery/pending-tickets").await).await;
+        assert_eq!(body, serde_json::json!([]));
+    }
+
+    #[tokio::test]
+    async fn pending_tickets_after_block_with_real_tx() {
+        let wallet = test_wallet();
+        let state = make_state(&wallet);
+        // A block with at least one non-coinbase tx issues a ticket to the miner.
+        let receiver = Wallet::from_secret_key_bytes([2u8; 32]).get_address();
+        let tx = Transaction::new_signed(&wallet, receiver, 100, 2);
+        let miner_addr = Wallet::from_secret_key_bytes([0xAAu8; 32]).get_address();
+        let coinbase = Transaction {
+            sender: String::new(),
+            receiver: miner_addr.clone(),
+            amount: 1,
+            fee: 0,
+            nonce: 0,
+            public_key: [0u8; 32],
+            signature: vec![],
+        };
+        let txs = vec![coinbase, tx];
+        let (index, previous_hash) = {
+            let chain = state.chain.read().await;
+            (chain.get_height(), chain.get_latest_hash())
+        };
+        let mut block = Block {
+            index,
+            previous_hash,
+            timestamp: now_secs(),
+            nonce: 0,
+            tx_root: Block::compute_tx_root(&txs).expect("infallible"),
+            transactions: txs,
+            hash: vec![],
+        };
+        block.hash = block.calculate_hash().expect("infallible");
+        let resp = post_json(state.clone(), "/blocks", serde_json::json!(block)).await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = json_body(get_req(state, "/lottery/pending-tickets").await).await;
+        assert_eq!(body.as_array().unwrap().len(), 1);
+        assert_eq!(body[0]["miner"], miner_addr);
+        assert_eq!(body[0]["created_height"], 1);
+        assert_eq!(body[0]["settle_height"], 1 + REVEAL_BLOCKS);
+    }
 
     #[tokio::test]
     async fn add_peer_loopback_address_returns_400() {
