@@ -19,6 +19,10 @@ FROM nginx:alpine-slim
 COPY lootcoin-web/*.html lootcoin-web/*.css lootcoin-web/*.js lootcoin-web/favicon.ico \
      /usr/share/nginx/html/
 
+# Explicit revalidation headers so browsers never serve a stale module
+# after an image rebuild (see the comment in nginx.conf).
+COPY lootcoin-web/nginx.conf /etc/nginx/conf.d/default.conf
+
 # Overlay the compiled WASM package from the builder.
 COPY --from=wasm-builder /build/lootcoin-wallet/pkg/ \
      /usr/share/nginx/html/lootcoin-wallet/pkg/

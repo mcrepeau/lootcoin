@@ -1,6 +1,6 @@
 import { addressToWordcode } from "./wordcode.js";
 import { attachTooltip } from "./tooltip.js";
-import { nodeFetch } from "./node.js";
+import { nodeFetch, subscribeEvents } from "./node.js";
 
 const BATCH = 15;
 const TX_BATCH = 20;
@@ -491,8 +491,16 @@ byId("addrSearchBtn").addEventListener("click", searchAddress);
 byId("addrInput").addEventListener("keydown", (e) => { if (e.key === "Enter") searchAddress(); });
 byId("txLoadMoreBtn").addEventListener("click", loadMoreTxs);
 
-// Auto-refresh stats only — don't disrupt scroll position
+// Auto-refresh stats only — don't disrupt scroll position. Also the fallback
+// for anything the live event stream below misses while it is down.
 setInterval(loadHead, 15_000);
+
+// Live updates: new blocks appear in the feed the moment they are found.
+// loadHead() refreshes the stats strip and prepends any new blocks to the
+// list — the same path the poll uses, now event-triggered.
+subscribeEvents({
+  onBlock: () => loadHead(),
+});
 
 // Initial load
 reset();

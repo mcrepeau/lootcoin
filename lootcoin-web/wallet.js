@@ -1,7 +1,7 @@
 import init, { Wallet } from "./lootcoin-wallet/pkg/lootcoin_wallet.js";
 import { addressToWordcode } from "./wordcode.js";
 import { attachTooltip } from "./tooltip.js";
-import { nodeFetch } from "./node.js";
+import { nodeFetch, subscribeEvents } from "./node.js";
 import { hasVault, readVaultMeta, saveVault, unlockVault, forgetVault } from "./vault.js";
 
 // bech32 alphabet used in lootcoin addresses (loot1…)
@@ -574,10 +574,28 @@ async function main() {
     });
   });
 
-  // Fetch live network stats and refresh balance every 30s
+  // Fetch live network stats and refresh balance every 30s — the fallback
+  // for anything the live event stream misses (or when SSE is blocked).
   fetchNetworkStats();
   setInterval(fetchNetworkStats, 30_000);
   setInterval(() => { if (wallet) queryBalance(); }, 30_000);
+
+  // Live updates: subscribe to the node's event stream and refresh the
+  // moment a block lands or one of our own transactions appears in the
+  // mempool, instead of waiting for the 30s poll.
+  subscribeEvents({
+    onBlock: () => {
+      fetchNetworkStats();
+      if (wallet) queryBalance();
+    },
+    onTransaction: (tx) => {
+      const myAddr = byId("address").textContent;
+      if (wallet && myAddr !== "(none)" && (tx.sender === myAddr || tx.receiver === myAddr)) {
+        fetchNetworkStats();
+        queryBalance();
+      }
+    },
+  });
 
   updateFeeHint();
 
