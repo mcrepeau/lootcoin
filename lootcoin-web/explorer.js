@@ -154,7 +154,7 @@ function createBlockEl(block) {
 
   const item = document.createElement("div");
   item.className = "block-item";
-  item.innerHTML = `
+  item.innerHTML = DOMPurify.sanitize(`
     <div class="block-header">
       <span class="block-index">#${escapeHtml(block.index)}</span>
       <div class="block-meta">
@@ -166,7 +166,7 @@ function createBlockEl(block) {
     </div>
     <div class="block-txs tx-list">
       ${renderTxRows(allRows)}
-    </div>`;
+    </div>`);
 
   const header  = item.querySelector(".block-header");
   const txsEl   = item.querySelector(".block-txs");
@@ -365,7 +365,7 @@ async function loadMoreTxs() {
       byId("txEmpty").textContent = "No transactions found for this address.";
       byId("txEmpty").hidden = false;
     } else if (txs.length > 0) {
-      byId("txList").insertAdjacentHTML("beforeend", renderAddrTxRows(txs, currentAddress));
+      byId("txList").insertAdjacentHTML("beforeend", DOMPurify.sanitize(renderAddrTxRows(txs, currentAddress)));
       txOffset += txs.length;
     }
 
@@ -423,7 +423,7 @@ async function loadLottery(tier) {
       byId("lotteryEmpty").textContent = "No payouts found.";
       byId("lotteryEmpty").hidden = false;
     } else {
-      byId("lotteryList").innerHTML = renderLotteryRows(payouts);
+      byId("lotteryList").innerHTML = DOMPurify.sanitize(renderLotteryRows(payouts));
     }
   } catch {
     byId("lotteryEmpty").textContent = "Could not fetch lottery payouts.";

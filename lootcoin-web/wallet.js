@@ -173,7 +173,7 @@ function renderTxList(txs, myAddr) {
     return;
   }
 
-  list.innerHTML = txs.map(tx => {
+  list.innerHTML = DOMPurify.sanitize(txs.map(tx => {
     const isCoinbase = !tx.sender;
     const isIn = tx.receiver === myAddr;
     const isOut = tx.sender === myAddr;
@@ -227,7 +227,7 @@ function renderTxList(txs, myAddr) {
           <div class="tx-meta">Block #${tx.block_index}${feeLine}</div>
         </div>
       </div>`;
-  }).join("");
+  }).join(""));
 }
 
 // ── Address tooltip (history panel) ──────────────────────────────────────────
