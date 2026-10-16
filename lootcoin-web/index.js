@@ -52,7 +52,7 @@ async function refreshPot() {
   }
 }
 
-document.getElementById('potRefreshBtn').addEventListener('click', refreshPot);
+document.getElementById('potRefreshBtn').addEventListener('click', () => { void refreshPot(); });
 
 // ── Floating toast: latest lottery payout ──────────────────────────────
 
@@ -102,9 +102,9 @@ document.getElementById('payoutToastClose')
 // Instant refresh the moment a new block lands; polling below remains as
 // the fallback.
 subscribeEvents({
-  onBlock: () => { refreshPot(); refreshLatestPayout(); },
+  onBlock: () => { void refreshPot(); void refreshLatestPayout(); },
 });
 
-refreshPot();
-refreshLatestPayout();
-setInterval(() => { refreshPot(); refreshLatestPayout(); }, REFRESH_MS);
+void refreshPot();
+void refreshLatestPayout();
+setInterval(() => { void refreshPot(); void refreshLatestPayout(); }, REFRESH_MS);

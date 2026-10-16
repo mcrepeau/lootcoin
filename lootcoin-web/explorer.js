@@ -450,7 +450,7 @@ byId("tabBlocks").addEventListener("click",  () => showTab("blocks"));
 byId("tabTxs").addEventListener("click",     () => showTab("txs"));
 byId("tabLottery").addEventListener("click", () => {
   showTab("lottery");
-  if (!lotteryLoaded) loadLottery("");
+  if (!lotteryLoaded) void loadLottery("");
 });
 
 // Tier filter pills
@@ -466,7 +466,7 @@ for (const btn of document.querySelectorAll(".tier-filter-btn")) {
 // ── Scroll listener ───────────────────────────────────────────────────────────
 
 document.querySelector(".explorer-main").addEventListener("scroll", () => {
-  if (!allLoaded && !isLoading && sentinelInView()) loadMoreBlocks();
+  if (!allLoaded && !isLoading && sentinelInView()) void loadMoreBlocks();
 });
 
 // ── Full reset ────────────────────────────────────────────────────────────────
@@ -486,14 +486,14 @@ async function reset() {
 
 // ── Event wiring ──────────────────────────────────────────────────────────────
 
-byId("refreshBtn").addEventListener("click", reset);
-byId("addrSearchBtn").addEventListener("click", searchAddress);
-byId("addrInput").addEventListener("keydown", (e) => { if (e.key === "Enter") searchAddress(); });
-byId("txLoadMoreBtn").addEventListener("click", loadMoreTxs);
+byId("refreshBtn").addEventListener("click", () => { void reset(); });
+byId("addrSearchBtn").addEventListener("click", () => { void searchAddress(); });
+byId("addrInput").addEventListener("keydown", (e) => { if (e.key === "Enter") void searchAddress(); });
+byId("txLoadMoreBtn").addEventListener("click", () => { void loadMoreTxs(); });
 
 // Auto-refresh stats only — don't disrupt scroll position. Also the fallback
 // for anything the live event stream below misses while it is down.
-setInterval(loadHead, 15_000);
+setInterval(() => { void loadHead(); }, 15_000);
 
 // Live updates: new blocks appear in the feed the moment they are found.
 // loadHead() refreshes the stats strip and prepends any new blocks to the
@@ -503,7 +503,7 @@ subscribeEvents({
 });
 
 // Initial load
-reset();
+void reset();
 
 // ── Deep links (explorer.html#payout=<height>) ─────────────────────────────
 
@@ -522,4 +522,4 @@ async function openDeepLink() {
   rows[0].scrollIntoView({ block: "center", behavior: "smooth" });
 }
 
-openDeepLink();
+void openDeepLink();
