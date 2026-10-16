@@ -131,11 +131,11 @@ function renderTxRows(txs) {
       <div class="tx-item">
         <div class="tx-left">
           <span class="tx-badge ${badgeClass}">${badgeText}</span>
-          <span class="tx-amount ${amountClass}">${amountText}</span>
+          <span class="tx-amount ${amountClass}">${escapeHtml(amountText)}</span>
         </div>
         <div class="tx-right">
           <div class="tx-counterpart">${counterpart}</div>
-          <div class="tx-meta">${feeLine || "&nbsp;"}</div>
+          <div class="tx-meta">${feeLine ? escapeHtml(feeLine) : "&nbsp;"}</div>
         </div>
       </div>`;
   }).join("");
@@ -156,11 +156,11 @@ function createBlockEl(block) {
   item.className = "block-item";
   item.innerHTML = `
     <div class="block-header">
-      <span class="block-index">#${block.index}</span>
+      <span class="block-index">#${escapeHtml(block.index)}</span>
       <div class="block-meta">
-        <span class="block-txcount">${txLabel}</span>
-        <span class="block-time">${fmtTime(block.timestamp)}</span>
-        <span class="block-hash">${truncHash(hex(block.hash))}</span>
+        <span class="block-txcount">${escapeHtml(txLabel)}</span>
+        <span class="block-time">${escapeHtml(fmtTime(block.timestamp))}</span>
+        <span class="block-hash">${escapeHtml(truncHash(hex(block.hash)))}</span>
       </div>
       <span class="block-chevron">▼</span>
     </div>
@@ -311,11 +311,11 @@ function renderAddrTxRows(txs, address) {
       <div class="tx-item">
         <div class="tx-left">
           <span class="tx-badge ${badgeClass}">${badgeText}</span>
-          <span class="tx-amount ${amountClass}">${amountText}</span>
+          <span class="tx-amount ${amountClass}">${escapeHtml(amountText)}</span>
         </div>
         <div class="tx-right">
           <div class="tx-counterpart">${counterpart}</div>
-          <div class="tx-meta">${feePart}Block #${tx.block_index}</div>
+          <div class="tx-meta">${escapeHtml(`${feePart}Block #${tx.block_index}`)}</div>
         </div>
       </div>`;
   }).join("");
@@ -390,22 +390,22 @@ async function loadMoreTxs() {
 
 let lotteryLoaded = false;
 
-const KNOWN_TIERS = ["small", "medium", "large", "jackpot"];
+const KNOWN_TIERS = new Set(["small", "medium", "large", "jackpot"]);
 
 function renderLotteryRows(payouts) {
   return payouts.map(p => {
-    const tierClass = KNOWN_TIERS.includes(p.tier) ? `tx-badge-tier-${p.tier}` : "tx-badge-tier-unknown";
+    const tierClass = KNOWN_TIERS.has(p.tier) ? `tx-badge-tier-${p.tier}` : "tx-badge-tier-unknown";
     const wc = `<span class="wordcode-tip" data-address="${escapeHtml(p.receiver)}">${escapeHtml(addressToWordcode(p.receiver))}</span>`;
     const timePart = p.block_timestamp != null ? ` · ${fmtTime(p.block_timestamp)}` : "";
     return `
-      <div class="tx-item" data-block-index="${p.block_index}">
+      <div class="tx-item" data-block-index="${escapeHtml(p.block_index)}">
         <div class="tx-left">
           <span class="tx-badge ${tierClass}">${escapeHtml(p.tier.toUpperCase())}</span>
-          <span class="tx-amount tx-amount-in">+${fmt(p.amount)}</span>
+          <span class="tx-amount tx-amount-in">${escapeHtml(`+${fmt(p.amount)}`)}</span>
         </div>
         <div class="tx-right">
           <div class="tx-counterpart">Lottery → ${wc}</div>
-          <div class="tx-meta">Block #${p.block_index}${timePart}</div>
+          <div class="tx-meta">${escapeHtml(`Block #${p.block_index}${timePart}`)}</div>
         </div>
       </div>`;
   }).join("");
@@ -462,7 +462,7 @@ for (const btn of document.querySelectorAll(".tier-filter-btn")) {
     document.querySelectorAll(".tier-filter-btn").forEach(b => b.classList.remove("active"));
     btn.classList.add("active");
     lotteryLoaded = false;
-    loadLottery(btn.dataset.tier);
+    void loadLottery(btn.dataset.tier);
   });
 }
 
@@ -506,14 +506,14 @@ subscribeEvents({
 });
 
 // Initial load
-void reset();
+await reset();
 
 // ── Deep links (explorer.html#payout=<height>) ─────────────────────────────
 
 // Shared from the home page ticker: open the Lottery tab and highlight the
 // payout(s) settled in the referenced block.
 async function openDeepLink() {
-  const match = location.hash.match(/^#payout=(\d+)$/);
+  const match = /^#payout=(\d+)$/.exec(location.hash);
   if (!match) return;
   const target = Number(match[1]);
   showTab("lottery");
@@ -525,4 +525,4 @@ async function openDeepLink() {
   rows[0].scrollIntoView({ block: "center", behavior: "smooth" });
 }
 
-void openDeepLink();
+await openDeepLink();

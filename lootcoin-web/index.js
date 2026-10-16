@@ -48,6 +48,8 @@ async function refreshPot() {
       }
     }
   } catch (_) {
+    // Node unreachable or malformed response — flag it via the red pulse;
+    // the 30s poll (or the next block event) retries.
     pulse.style.background = '#ef5350';
   }
 }
@@ -88,9 +90,9 @@ async function refreshLatestPayout() {
     if (key !== lastPayoutKey) {
       lastPayoutKey = key;
       // reappear (if dismissed) and flash when a new payout lands
-      payoutToast.classList.remove('hidden');
-      payoutToast.classList.remove('flash');
-      void payoutToast.offsetWidth;
+      payoutToast.classList.remove('hidden', 'flash');
+      // Reading a layout property forces a style recalc so the flash restarts
+      payoutToast.getBoundingClientRect();
       payoutToast.classList.add('flash');
     }
   } catch (_) { /* keep last render */ }
@@ -105,6 +107,5 @@ subscribeEvents({
   onBlock: () => { void refreshPot(); void refreshLatestPayout(); },
 });
 
-void refreshPot();
-void refreshLatestPayout();
+await Promise.all([refreshPot(), refreshLatestPayout()]);
 setInterval(() => { void refreshPot(); void refreshLatestPayout(); }, REFRESH_MS);

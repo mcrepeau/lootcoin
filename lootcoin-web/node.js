@@ -9,7 +9,7 @@
 // on inputs ending in a long run of slashes; a single backward scan is O(n).
 function stripTrailingSlashes(u) {
   let end = u.length;
-  while (end > 0 && u.charCodeAt(end - 1) === 47) end--; // 47 = "/"
+  while (end > 0 && u.codePointAt(end - 1) === 47) end--; // 47 = "/"
   return u.slice(0, end);
 }
 

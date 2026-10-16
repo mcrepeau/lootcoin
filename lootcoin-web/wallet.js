@@ -3,7 +3,7 @@ import { addressToWordcode } from "./wordcode.js";
 import { attachTooltip } from "./tooltip.js";
 import { nodeFetch, subscribeEvents } from "./node.js";
 import { escapeHtml } from "./util.js";
-import { hasVault, readVaultMeta, saveVault, unlockVault, forgetVault } from "./vault.js";
+import { readVaultMeta, saveVault, unlockVault, forgetVault } from "./vault.js";
 
 // bech32 alphabet used in lootcoin addresses (loot1…)
 const BECH32_CHARS = 'qpzry9x8gf2tvdw0s3jn54khce6mua7l';
@@ -440,7 +440,7 @@ async function main() {
       byId("saveVaultOverlay").style.display = "none";
       updateVaultUI();
     } catch (e) {
-      err.textContent = "Could not save: " + (e && e.message ? e.message : e);
+      err.textContent = "Could not save: " + (e?.message || e);
     } finally {
       byId("saveVaultConfirm").disabled = false;
     }
@@ -641,4 +641,4 @@ async function main() {
   });
 }
 
-void main();
+await main();
