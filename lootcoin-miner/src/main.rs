@@ -210,6 +210,96 @@ async fn watch_sse_for_block(
     Ok(())
 }
 
+/// Outcome of submitting a mined block to a single node.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SubmitOutcome {
+    /// The node accepted the block into its chain.
+    Accepted,
+    /// The node reported a conflict — another miner's block at the same
+    /// height already reached it first (stale work).
+    Orphaned,
+    /// The node considered the block invalid and rejected it.
+    Rejected,
+    /// The node could not be contacted.
+    Unreachable,
+}
+
+/// Combine per-node submission outcomes into the best result achieved: any
+/// acceptance means the block is in the chain and gossip carries it to the
+/// rest of the network, so a single healthy node is enough.
+fn merge_outcome(current: SubmitOutcome, new: SubmitOutcome) -> SubmitOutcome {
+    match (current, new) {
+        (SubmitOutcome::Accepted, _) | (_, SubmitOutcome::Accepted) => SubmitOutcome::Accepted,
+        (SubmitOutcome::Orphaned, _) | (_, SubmitOutcome::Orphaned) => SubmitOutcome::Orphaned,
+        (SubmitOutcome::Rejected, _) | (_, SubmitOutcome::Rejected) => SubmitOutcome::Rejected,
+        (SubmitOutcome::Unreachable, SubmitOutcome::Unreachable) => SubmitOutcome::Unreachable,
+    }
+}
+
+/// POST the mined block to every configured node in parallel, logging each
+/// node's response, and return the best outcome across the fleet. Direct
+/// fan-out cuts propagation latency versus submitting to a single node and
+/// letting gossip do the rest, and it means one unhealthy node cannot
+/// swallow a mined block. Duplicates are harmless: receiving nodes
+/// deduplicate by block hash.
+async fn submit_block(
+    client: &reqwest::Client,
+    node_urls: &[String],
+    block: &Block,
+) -> SubmitOutcome {
+    // Serialize once; every POST shares the same body.
+    let body = serde_json::to_vec(block).expect("block serialization is infallible");
+
+    let mut tasks = Vec::with_capacity(node_urls.len());
+    for url in node_urls {
+        let url = url.clone();
+        let client = client.clone();
+        let body = body.clone();
+        tasks.push(tokio::spawn(async move {
+            let resp = client
+                .post(format!("{}/blocks", url))
+                .header(reqwest::header::CONTENT_TYPE, "application/json")
+                .body(body)
+                .send()
+                .await;
+            (url, resp)
+        }));
+    }
+
+    let mut best = SubmitOutcome::Unreachable;
+    for task in tasks {
+        let (url, resp) = match task.await {
+            Ok(pair) => pair,
+            Err(e) => {
+                warn!("Submit task for a node failed: {e}");
+                continue;
+            }
+        };
+        let outcome = match resp {
+            Err(e) => {
+                warn!("Failed to submit block to {url}: {e}");
+                SubmitOutcome::Unreachable
+            }
+            Ok(resp) => {
+                let status = resp.status();
+                if status.is_success() {
+                    info!("Node {url} accepted the block");
+                    SubmitOutcome::Accepted
+                } else if status == reqwest::StatusCode::CONFLICT {
+                    info!("Node {url} reported a conflict (stale — another miner was faster)");
+                    SubmitOutcome::Orphaned
+                } else {
+                    let text = resp.text().await.unwrap_or_default();
+                    warn!("Node {url} rejected the block ({status}): {text}");
+                    SubmitOutcome::Rejected
+                }
+            }
+        };
+        best = merge_outcome(best, outcome);
+    }
+    best
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let _ = fmt()
@@ -499,31 +589,20 @@ async fn main() -> anyhow::Result<()> {
             hex::encode(&block.hash)
         );
 
-        // 6) Submit block — failure is non-fatal
-        match client
-            .post(format!("{}/blocks", base_url))
-            .json(&block)
-            .send()
-            .await
-        {
-            Err(e) => {
-                warn!("Failed to submit block to {}: {}", base_url, e);
-                tokio::time::sleep(Duration::from_secs(2)).await;
+        // 6) Submit the block to every node in parallel — failure is non-fatal.
+        //    Any acceptance is enough: gossip propagates the block from there.
+        match submit_block(&client, &cfg.node_urls, &block).await {
+            SubmitOutcome::Accepted => {
+                info!("Block accepted at height {}", block.index);
             }
-            Ok(resp) => {
-                let status = resp.status();
-                if status.is_success() {
-                    info!("Block accepted at height {}", block.index);
-                } else if status == reqwest::StatusCode::CONFLICT {
-                    info!(
-                        "Block orphaned at height {} (stale — another miner was faster)",
-                        block.index
-                    );
-                } else {
-                    let text = resp.text().await.unwrap_or_default();
-                    warn!("Block rejected by {} ({}): {}", base_url, status, text);
-                    tokio::time::sleep(Duration::from_secs(2)).await;
-                }
+            SubmitOutcome::Orphaned => {
+                info!(
+                    "Block orphaned at height {} (stale — another miner was faster)",
+                    block.index
+                );
+            }
+            SubmitOutcome::Rejected | SubmitOutcome::Unreachable => {
+                tokio::time::sleep(Duration::from_secs(2)).await;
             }
         }
     }
@@ -620,6 +699,63 @@ mod tests {
         let entry = make_entry(60, 10);
         assert!(!is_eligible(&entry, 10)); // age = 0
         assert!(is_eligible(&entry, 11)); // age = 1
+    }
+
+    // ── merge_outcome ────────────────────────────────────────────────────────
+
+    #[test]
+    fn merge_outcome_acceptance_wins_over_everything() {
+        for other in [
+            SubmitOutcome::Accepted,
+            SubmitOutcome::Orphaned,
+            SubmitOutcome::Rejected,
+            SubmitOutcome::Unreachable,
+        ] {
+            assert_eq!(
+                merge_outcome(other, SubmitOutcome::Accepted),
+                SubmitOutcome::Accepted
+            );
+            assert_eq!(
+                merge_outcome(SubmitOutcome::Accepted, other),
+                SubmitOutcome::Accepted
+            );
+        }
+    }
+
+    #[test]
+    fn merge_outcome_orphan_beats_reject_and_unreachable() {
+        assert_eq!(
+            merge_outcome(SubmitOutcome::Unreachable, SubmitOutcome::Orphaned),
+            SubmitOutcome::Orphaned
+        );
+        assert_eq!(
+            merge_outcome(SubmitOutcome::Rejected, SubmitOutcome::Orphaned),
+            SubmitOutcome::Orphaned
+        );
+        assert_eq!(
+            merge_outcome(SubmitOutcome::Orphaned, SubmitOutcome::Rejected),
+            SubmitOutcome::Orphaned
+        );
+    }
+
+    #[test]
+    fn merge_outcome_reject_beats_unreachable() {
+        assert_eq!(
+            merge_outcome(SubmitOutcome::Unreachable, SubmitOutcome::Rejected),
+            SubmitOutcome::Rejected
+        );
+        assert_eq!(
+            merge_outcome(SubmitOutcome::Rejected, SubmitOutcome::Unreachable),
+            SubmitOutcome::Rejected
+        );
+    }
+
+    #[test]
+    fn merge_outcome_all_unreachable_stays_unreachable() {
+        assert_eq!(
+            merge_outcome(SubmitOutcome::Unreachable, SubmitOutcome::Unreachable),
+            SubmitOutcome::Unreachable
+        );
     }
 
     // ── mine ──────────────────────────────────────────────────────────────────
