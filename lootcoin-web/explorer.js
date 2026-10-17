@@ -432,11 +432,61 @@ async function loadLottery(tier) {
   lotteryLoaded = true;
 }
 
+function pendingRowHtml(t) {
+  const wc = `<span class="wordcode-tip" data-address="${escapeHtml(t.miner)}">${escapeHtml(addressToWordcode(t.miner))}</span>`;
+  return `
+    <div class="tx-item">
+      <div class="tx-right tx-pending-body">
+        <div class="tx-counterpart">${wc}</div>
+        <div class="tx-meta">${escapeHtml(`Issued at block #${t.created_height} · draws at #${t.settle_height}`)}</div>
+      </div>
+    </div>`;
+}
+
+// Reconcile the pending list with server state instead of rebuilding it: rows
+// for tickets still pending are left untouched, newly issued tickets are
+// appended, and settled tickets are removed. Ticket data is immutable, so no
+// in-place updates are needed — and live SSE refreshes do not flicker.
+function syncPendingTickets(tickets) {
+  const list = byId("pendingList");
+  const keyOf = t => `${t.created_height}:${t.miner}`;
+  const wanted = new Set(tickets.map(keyOf));
+  for (const el of [...list.children]) {
+    if (!wanted.has(el.dataset.key)) el.remove();
+  }
+  const existing = new Set([...list.children].map(el => el.dataset.key));
+  for (const t of tickets) {
+    const key = keyOf(t);
+    if (existing.has(key)) continue;
+    list.insertAdjacentHTML("beforeend", DOMPurify.sanitize(pendingRowHtml(t)));
+    list.lastElementChild.dataset.key = key;
+  }
+  byId("pendingEmpty").textContent = "No pending tickets.";
+  byId("pendingEmpty").hidden = tickets.length > 0;
+}
+
+async function loadPendingTickets() {
+  try {
+    const res = await nodeFetch(`/lottery/pending-tickets`);
+    if (!res.ok) throw new Error();
+    const tickets = await res.json();
+    syncPendingTickets(tickets);
+  } catch {
+    // Keep the last known list — the next SSE block event retries. Only
+    // surface the error when there is nothing to show at all.
+    if (byId("pendingList").children.length === 0) {
+      byId("pendingEmpty").textContent = "Could not fetch pending tickets.";
+      byId("pendingEmpty").hidden = false;
+    }
+  }
+}
+
 // ── Address tooltip ───────────────────────────────────────────────────────────
 
 attachTooltip(byId("blockList"), byId("addrTooltip"));
 attachTooltip(byId("txList"), byId("addrTooltip"));
 attachTooltip(byId("lotteryList"), byId("addrTooltip"));
+attachTooltip(byId("pendingList"), byId("addrTooltip"));
 
 // ── Tab switching ─────────────────────────────────────────────────────────────
 
@@ -454,6 +504,7 @@ byId("tabTxs").addEventListener("click",     () => showTab("txs"));
 byId("tabLottery").addEventListener("click", () => {
   showTab("lottery");
   if (!lotteryLoaded) void loadLottery("");
+  void loadPendingTickets();
 });
 
 // Tier filter pills
@@ -502,7 +553,10 @@ setInterval(() => { void loadHead(); }, 15_000);
 // loadHead() refreshes the stats strip and prepends any new blocks to the
 // list — the same path the poll uses, now event-triggered.
 subscribeEvents({
-  onBlock: () => loadHead(),
+  onBlock: () => {
+    void loadHead();
+    if (!byId("lotteryPanel").hidden) void loadPendingTickets();
+  },
 });
 
 // Initial load
@@ -517,6 +571,7 @@ async function openDeepLink() {
   if (!match) return;
   const target = Number(match[1]);
   showTab("lottery");
+  await loadPendingTickets();
   await loadLottery("");
   const rows = [...document.querySelectorAll("#lotteryList [data-block-index]")]
     .filter(r => Number(r.dataset.blockIndex) === target);

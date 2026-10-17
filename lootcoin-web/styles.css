@@ -1148,6 +1148,37 @@ button:disabled {
 .tx-badge-tier-medium  { background: #0d1e2d; color: var(--tier-medium); }
 .tx-badge-tier-large   { background: #2d2000; color: var(--tier-large); }
 .tx-badge-tier-jackpot { background: #2d2500; color: var(--tier-jackpot); }
+/* Explorer panel section headings (Tickets tab) */
+.panel-subheading {
+  font-size: 0.95rem;
+  font-weight: 600;
+  margin: 18px 0 10px;
+  color: #8b95a3;
+  letter-spacing: 0.02em;
+}
+
+/* Tickets tab: pending tickets and settled payouts as two side-by-side columns */
+.tickets-columns {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 0 28px;
+  align-items: start;
+}
+
+.tickets-col {
+  min-width: 0;
+}
+
+@media (max-width: 768px) {
+  .tickets-columns {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* Pending ticket rows have no badge/amount, so align them like the rest of the list */
+.tx-pending-body {
+  text-align: left;
+}
 
 .tx-load-more {
   display: flex;
