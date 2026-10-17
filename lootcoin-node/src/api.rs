@@ -373,6 +373,12 @@ async fn relay_tx_inner(state: &AppState, tx: Transaction) -> bool {
         warn!(target: "api", "relayed tx failed signature check");
         return false;
     }
+    // Consensus rule mirrored at the mempool boundary: never hold a tx whose
+    // receiver is not a valid lootcoin address, even before it could be mined.
+    if !is_valid_address(&tx.receiver) {
+        warn!(target: "api", "relayed tx rejected: invalid receiver address");
+        return false;
+    }
     let chain = state.chain.read().await;
     if !chain.validate_transaction_state(&tx) {
         return false;
@@ -1845,6 +1851,59 @@ mod tests {
         assert_eq!(body[0]["miner"], miner_addr);
         assert_eq!(body[0]["created_height"], 1);
         assert_eq!(body[0]["settle_height"], 1 + REVEAL_BLOCKS);
+    }
+
+    // ── consensus-level receiver validation ─────────────────────────────────
+
+    #[tokio::test]
+    async fn submit_block_with_invalid_receiver_tx_returns_400() {
+        let wallet = test_wallet();
+        let state = make_state(&wallet);
+        // Valid signature, garbage receiver: only the consensus-level rule
+        // in update_state can catch this — the API block checks do not.
+        let tx =
+            Transaction::new_signed(&wallet, "><img src=x onerror=alert(1)>".to_string(), 100, 2);
+        let miner_addr = Wallet::from_secret_key_bytes([0xAAu8; 32]).get_address();
+        let coinbase = Transaction {
+            sender: String::new(),
+            receiver: miner_addr,
+            amount: 1,
+            fee: 0,
+            nonce: 0,
+            public_key: [0u8; 32],
+            signature: vec![],
+        };
+        let txs = vec![coinbase, tx];
+        let (index, previous_hash) = {
+            let chain = state.chain.read().await;
+            (chain.get_height(), chain.get_latest_hash())
+        };
+        let mut block = Block {
+            index,
+            previous_hash,
+            timestamp: now_secs(),
+            nonce: 0,
+            tx_root: Block::compute_tx_root(&txs).expect("infallible"),
+            transactions: txs,
+            hash: vec![],
+        };
+        block.hash = block.calculate_hash().expect("infallible");
+        let resp = post_json(state.clone(), "/blocks", serde_json::json!(block)).await;
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        // The chain must be untouched.
+        let body = json_body(get_req(state, "/chain/head").await).await;
+        assert_eq!(body["height"], 1);
+    }
+
+    #[tokio::test]
+    async fn relay_tx_invalid_receiver_returns_400() {
+        let wallet = test_wallet();
+        let state = make_state(&wallet);
+        // Properly signed by a funded sender, but the receiver is garbage —
+        // the mempool relay path must refuse it.
+        let tx = Transaction::new_signed(&wallet, "garbage".to_string(), 100, 2);
+        let resp = post_json(state, "/transactions/relay", serde_json::json!(tx)).await;
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
     }
 
     #[tokio::test]

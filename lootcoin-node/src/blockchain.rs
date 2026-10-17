@@ -585,6 +585,15 @@ impl Blockchain {
                 if tx.fee < MIN_TX_FEE {
                     return false;
                 }
+                // Receiver must be a valid lootcoin address — consensus-level
+                // rule, so peer-relayed, replayed and reorg blocks are subject
+                // to the same check as API-submitted transactions. Credits to
+                // garbage strings would be unspendable forever and pollute the
+                // tx index. Sender needs no check: a valid signature implies
+                // sender == the address derived from the verified public key.
+                if lootcoin_core::wallet::decode_address(&tx.receiver).is_none() {
+                    return false;
+                }
                 // Reject replays: signature already confirmed, or seen earlier in this block.
                 if self.confirmed_signatures.contains(&tx.signature)
                     || !block_sigs.insert(tx.signature.clone())
@@ -1671,6 +1680,26 @@ mod tests {
         // 50/50 fee split: 5 to pot, 5 to miner (miner also has 1 from coinbase)
         assert_eq!(chain.get_pot(), 5);
         assert_eq!(chain.get_balance(&named_addr("miner")), 6); // 1 coinbase + 5 fee share
+    }
+    #[test]
+    fn apply_block_rejects_tx_with_invalid_receiver() {
+        let mut chain = make_chain();
+        let alice = Wallet::new();
+        let alice_addr = alice.get_address();
+        chain.balances.insert(alice_addr, 500);
+
+        // Properly signed tx whose receiver is not a lootcoin address — the
+        // consensus-level rule must reject the whole block before any
+        // balance mutation, so no coins are ever credited to a garbage key.
+        let garbage = "\"><img src=x onerror=alert(1)>".to_string();
+        let signed_tx = Transaction::new_signed(&alice, garbage.clone(), 100, 10);
+        let block = next_block(&chain, vec![coinbase_tx("m1"), signed_tx], GENESIS_TS + 1);
+        assert!(matches!(
+            chain.apply_in_memory(block, None),
+            BlockOutcome::Rejected
+        ));
+        assert_eq!(chain.get_height(), 1); // chain unchanged
+        assert!(!chain.balances.contains_key(&garbage));
     }
 
     // ── Conservation invariant ────────────────────────────────────────────────
@@ -2767,7 +2796,7 @@ mod tests {
         // Fee-paying transaction on the main chain inflates the pot.
         let alice = lootcoin_core::wallet::Wallet::new();
         chain.balances.insert(alice.get_address(), 1_000);
-        let fee_tx = Transaction::new_signed(&alice, "bob".to_string(), 100, 200);
+        let fee_tx = Transaction::new_signed(&alice, named_addr("bob"), 100, 200);
         chain.apply_in_memory(
             next_block(&chain, vec![coinbase_tx("main_a"), fee_tx], GENESIS_TS + 1),
             None,
