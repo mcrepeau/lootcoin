@@ -99,15 +99,25 @@
 
     <!-- Lottery panel -->
     <div id="lotteryPanel" hidden>
-      <div class="tier-filter-bar">
-        <button class="tier-filter-btn active" data-tier="">All</button>
-        <button class="tier-filter-btn" data-tier="small">Small</button>
-        <button class="tier-filter-btn" data-tier="medium">Medium</button>
-        <button class="tier-filter-btn" data-tier="large">Large</button>
-        <button class="tier-filter-btn" data-tier="jackpot">Jackpot</button>
+      <div class="tickets-columns">
+        <section class="tickets-col">
+          <h3 class="panel-subheading">Pending tickets</h3>
+          <div id="pendingList" class="tx-list"></div>
+          <p id="pendingEmpty" class="empty-state" hidden></p>
+        </section>
+        <section class="tickets-col">
+          <h3 class="panel-subheading">Settled payouts</h3>
+          <div class="tier-filter-bar">
+            <button class="tier-filter-btn active" data-tier="">All</button>
+            <button class="tier-filter-btn" data-tier="small">Small</button>
+            <button class="tier-filter-btn" data-tier="medium">Medium</button>
+            <button class="tier-filter-btn" data-tier="large">Large</button>
+            <button class="tier-filter-btn" data-tier="jackpot">Jackpot</button>
+          </div>
+          <div id="lotteryList" class="tx-list"></div>
+          <p id="lotteryEmpty" class="empty-state" hidden></p>
+        </section>
       </div>
-      <div id="lotteryList" class="tx-list"></div>
-      <p id="lotteryEmpty" class="empty-state" hidden></p>
     </div>
   </main>
 
