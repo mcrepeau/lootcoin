@@ -32,6 +32,24 @@ const INITIAL_DIFFICULTY: f64 = 25.0;
 const MIN_DIFFICULTY: f64 = 8.0;
 const MAX_DIFFICULTY: f64 = 127.0;
 
+/// Initial difficulty for a fresh chain.
+///
+/// `LOOTCOIN_INITIAL_DIFFICULTY` overrides the protocol default so local test
+/// nets and integration tests can mine instantly instead of doing real
+/// proof-of-work (2^25 expected hashes per block). Clamped to
+/// [1.0, INITIAL_DIFFICULTY]: a typo can only make mining stricter, never
+/// below one bit.
+///
+/// Only affects fresh chains — a node booting from an existing database derives
+/// its difficulty from replay or its latest checkpoint.
+fn initial_difficulty_from_env() -> f64 {
+    std::env::var("LOOTCOIN_INITIAL_DIFFICULTY")
+        .ok()
+        .and_then(|v| v.trim().parse::<f64>().ok())
+        .map(|d| d.clamp(1.0, INITIAL_DIFFICULTY))
+        .unwrap_or(INITIAL_DIFFICULTY)
+}
+
 /// Target time between consecutive blocks, in seconds.
 const TARGET_BLOCK_TIME_SECS: u64 = 60;
 
@@ -166,8 +184,8 @@ impl Blockchain {
             pot: 0,
             genesis_pot: 0,
             settled_payouts_by_block: HashMap::new(),
-            initial_difficulty: INITIAL_DIFFICULTY,
-            current_difficulty: INITIAL_DIFFICULTY,
+            initial_difficulty: initial_difficulty_from_env(),
+            current_difficulty: initial_difficulty_from_env(),
             asert_anchor: None,
             chain_work: 0,
             metrics: None,

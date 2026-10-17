@@ -270,5 +270,7 @@ On first boot the node creates `./data/` and initialises the database. Subsequen
 | `NODE_URL` | _(none)_ | This node's public URL, announced to peers |
 | `ARCHIVE` | `0` | Set to `1` to force a full replay from genesis, skipping peer snapshot sync. Use this to run a complete archive node |
 | `RUST_LOG` | `info` | Log filter (e.g. `debug`, `lootcoin_node=trace`) |
+| `LOOTCOIN_DATA_DIR` | `./data` | Directory for the redb database (mirrors the Docker volume mount) |
+| `LOOTCOIN_INITIAL_DIFFICULTY` | `25.0` | Initial difficulty for a fresh chain, clamped to [1.0, 25.0]. For local test nets and integration tests only — existing chains derive difficulty from replay |
 
 ---

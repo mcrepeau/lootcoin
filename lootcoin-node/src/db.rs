@@ -63,8 +63,11 @@ fn make_tx_key(address: &str, block_index: u64, tx_pos: usize) -> Vec<u8> {
 
 impl Db {
     pub fn new() -> Result<Self, Box<dyn std::error::Error>> {
-        fs::create_dir_all("./data")?;
-        let db = RedbDatabase::create("./data/node.redb")?;
+        // LOOTCOIN_DATA_DIR lets operators and tests place the database outside
+        // the process working directory (mirrors the Docker volume mount).
+        let dir = std::env::var("LOOTCOIN_DATA_DIR").unwrap_or_else(|_| "./data".to_string());
+        fs::create_dir_all(&dir)?;
+        let db = RedbDatabase::create(std::path::Path::new(&dir).join("node.redb"))?;
         {
             let wtxn = db.begin_write()?;
             wtxn.open_table(TX_INDEX)?;
