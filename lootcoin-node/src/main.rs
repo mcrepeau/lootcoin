@@ -168,7 +168,7 @@ async fn sync_from_peers(
                     if known_peers.len() >= gossip::MAX_PEERS {
                         break;
                     }
-                    let canonical = match api::canonicalize_peer_url(&p) {
+                    let canonical = match api::canonicalize_peer_url_trusted(&p) {
                         Some(u) => u,
                         None => {
                             warn!("Ignoring unsafe peer URL from discovery: {}", p);
@@ -670,7 +670,7 @@ async fn main() {
         .split(',')
         .map(str::trim)
         .filter(|s| !s.is_empty())
-        .filter_map(|s| match api::canonicalize_peer_url(s) {
+        .filter_map(|s| match api::canonicalize_peer_url_trusted(s) {
             Some(c) => Some(c),
             None => {
                 warn!("Ignoring invalid PEERS env entry: {s}");

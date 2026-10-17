@@ -1003,6 +1003,22 @@ pub fn is_valid_address(addr: &str) -> bool {
 /// - link-local / AWS metadata range (169.254.x.x)
 /// - IPv6 private (fc00::/7) and link-local (fe80::/10)
 pub fn canonicalize_peer_url(raw_url: &str) -> Option<String> {
+    canonicalize_peer_url_inner(raw_url, false)
+}
+
+/// Same as [`canonicalize_peer_url`], but allows loopback and private-range hosts.
+///
+/// Used only for operator-supplied peer configuration (the `PEERS` env var and
+/// peers persisted in the database), where the operator is trusted to point the
+/// node at their own network — docker-compose services or several nodes on
+/// localhost. The public `POST /peers` endpoint keeps the strict variant so an
+/// unauthenticated peer announcement can never steer the node at internal
+/// infrastructure.
+pub fn canonicalize_peer_url_trusted(raw_url: &str) -> Option<String> {
+    canonicalize_peer_url_inner(raw_url, true)
+}
+
+fn canonicalize_peer_url_inner(raw_url: &str, trusted: bool) -> Option<String> {
     let parsed = url::Url::parse(raw_url.trim()).ok()?;
 
     let scheme = parsed.scheme();
@@ -1011,6 +1027,11 @@ pub fn canonicalize_peer_url(raw_url: &str) -> Option<String> {
     }
 
     let host = parsed.host()?;
+
+    if trusted {
+        // Operator-configured peer: skip the loopback/private-range checks below.
+        return build_peer_origin(&parsed);
+    }
 
     match &host {
         url::Host::Domain(name) => {
@@ -1049,7 +1070,13 @@ pub fn canonicalize_peer_url(raw_url: &str) -> Option<String> {
         }
     }
 
-    // Build canonical origin: strip path/query/fragment, drop default port.
+    build_peer_origin(&parsed)
+}
+
+/// Build the canonical peer origin from a parsed URL: strip path/query/fragment
+/// and drop the port when it matches the scheme default.
+fn build_peer_origin(parsed: &url::Url) -> Option<String> {
+    let scheme = parsed.scheme();
     let default_port: u16 = if scheme == "http" { 80 } else { 443 };
     let host_str = parsed.host_str()?;
     Some(match parsed.port() {
